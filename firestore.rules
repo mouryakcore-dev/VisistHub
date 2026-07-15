@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function role() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    function isAdmin() { return signedIn() && role() == 'admin'; }
+    function isSales() { return signedIn() && (role() == 'admin' || role() == 'sales'); }
+    function isTournament() { return signedIn() && (role() == 'admin' || role() == 'tournament'); }
+
+    // Profiles: everyone signed in can read (needed to show names), only admins edit.
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Sales pipeline: admins + sales role can read/write. Tournament-role can read (dashboard stats).
+    match /salesLeads/{id} {
+      allow read: if signedIn();
+      allow write: if isSales();
+    }
+
+    // Relationship-management contacts & tournaments: admin-managed, everyone can read.
+    match /rmContacts/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /tournaments/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Registrations: admins fully manage; tournament-role can only toggle priority/rank fields.
+    match /registrations/{id} {
+      allow read: if signedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() ||
+        (isTournament() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['priority', 'priorityRank']));
+    }
+
+    // Video pipeline progress checkboxes: admin + tournament-stage roles.
+    match /progress/{id} {
+      allow read: if signedIn();
+      allow write: if isTournament();
+    }
+  }
+}
