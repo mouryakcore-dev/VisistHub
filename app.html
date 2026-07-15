@@ -80,21 +80,30 @@ input, select, textarea{ font-family: var(--body); }
 }
 .login-court{
   position:absolute; inset:0; overflow:hidden; pointer-events:none;
-  background: linear-gradient(-45deg, #071510, #0F241B, #143122, #071510);
-  background-size: 400% 400%;
-  animation: ambient-shift 12s ease infinite;
+  background: var(--bg);
 }
-@keyframes ambient-shift{
-  0%{ background-position: 0% 50%; }
-  50%{ background-position: 100% 50%; }
-  100%{ background-position: 0% 50%; }
+.login-court::before{
+  content:'';
+  position:absolute; top:-20%; left:-20%; width:140%; height:140%;
+  background: linear-gradient(120deg, #071510, #143122, #0F241B, #071510);
+  background-size: 200% 200%;
+  animation: ambient-drift 16s ease-in-out infinite;
+  will-change: transform;
+}
+@keyframes ambient-drift{
+  0%{ transform: translate3d(0,0,0) scale(1); }
+  50%{ transform: translate3d(-4%, 3%, 0) scale(1.05); }
+  100%{ transform: translate3d(0,0,0) scale(1); }
 }
 .login-court video{
   position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
-  filter: brightness(0.4) saturate(1.1);
   opacity:0; transition: opacity .6s ease;
+  will-change: opacity;
 }
 .login-court video.ready{ opacity:1; }
+.login-court .tint{
+  position:absolute; inset:0; background: rgba(5,10,8,0.55);
+}
 .login-court::after{
   content:''; position:absolute; inset:0;
   background: radial-gradient(1000px 600px at 50% 40%, transparent, var(--bg) 85%);
@@ -363,6 +372,7 @@ textarea{ min-height:70px; resize:vertical; }
 <div id="login-screen">
   <div class="login-court">
     <video id="login-bg-video" autoplay muted loop playsinline webkit-playsinline="true" preload="auto" src="login-bg.mp4"></video>
+    <div class="tint"></div>
   </div>
   <div class="login-card">
     <div class="login-brand">VisistHub</div>

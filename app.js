@@ -22,7 +22,7 @@ const db = getFirestore(app);
   video.muted = true;
   video.playsInline = true;
   video.addEventListener("playing", () => video.classList.add("ready"));
-  video.addEventListener("error", () => console.warn("Login background video failed to load — check assets/login-bg.mp4 was pushed to the repo."));
+  video.addEventListener("error", () => console.warn("Login background video failed to load — check login-bg.mp4 was pushed to the repo root."));
   const tryPlay = () => video.play().catch(() => { /* autoplay blocked; gradient fallback still shows */ });
   tryPlay();
   // Some mobile browsers only allow playback after the first user gesture.
