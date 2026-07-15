@@ -28,6 +28,12 @@ const STEP_KEYS = [
 ];
 const ANNOTATORS = ["Mourya", "Keerthi", "Benoush", "Srinivas V", "Srinivas P", "Harkhraj"];
 const VALID_ROLES = ["admin", "sales", "tournament"];
+const PLANS = [
+  { key: "free", label: "Free Tier" },
+  { key: "demo", label: "Demo Trial" },
+  { key: "paid", label: "Paid" }
+];
+const SUPER_ADMIN_USERNAMES = ["suresh", "sesha"];
 
 let appUsers = [];
 
@@ -44,6 +50,43 @@ let registrations = [];
 let progressDocs = [];
 
 let unsubs = [];
+
+// ---------------------------------------------------------------
+// TOAST + SAFE WRITES (shows a fading warning if Firestore rejects
+// a write, e.g. someone acting outside their role's permissions)
+// ---------------------------------------------------------------
+function showToast(message) {
+  const stack = document.getElementById("toast-stack");
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = message;
+  stack.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+function reportDbError(err) {
+  if (err && err.code === "permission-denied") {
+    showToast("You don't have permission to do that.");
+  } else {
+    showToast("Something went wrong — please try again.");
+  }
+  console.error(err);
+}
+async function safeAdd(colName, data) {
+  try { return await addDoc(collection(db, colName), data); }
+  catch (err) { reportDbError(err); throw err; }
+}
+async function safeUpdate(colName, id, data) {
+  try { return await updateDoc(doc(db, colName, id), data); }
+  catch (err) { reportDbError(err); throw err; }
+}
+async function safeDelete(colName, id) {
+  try { return await deleteDoc(doc(db, colName, id)); }
+  catch (err) { reportDbError(err); throw err; }
+}
+async function safeSet(colName, id, data) {
+  try { return await setDoc(doc(db, colName, id), data); }
+  catch (err) { reportDbError(err); throw err; }
+}
 
 // ---------------------------------------------------------------
 // AUTH
@@ -124,30 +167,36 @@ function roleLabel(role) {
   return role;
 }
 
+function isSuperAdmin() {
+  return currentUser.role === "admin" && SUPER_ADMIN_USERNAMES.includes((currentUser.username || "").toLowerCase());
+}
+
 function applyRoleVisibility() {
   const salesNav = document.querySelector('.nav-item[data-view="sales"]');
   const rmNav = document.querySelector('.nav-item[data-view="rm"]');
+  const clientsNav = document.querySelector('.nav-item[data-view="clients"]');
   const progressNav = document.querySelector('.nav-item[data-view="progress"]');
   const backupNav = document.querySelector('.nav-item[data-view="backup"]');
   const usersNav = document.querySelector('.nav-item[data-view="users"]');
   // Everyone can view Dashboard. Adjust nav based on role.
   if (currentUser.role === "sales") {
     rmNav.style.display = "none";
+    clientsNav.style.display = "none";
     progressNav.style.display = "none";
     backupNav.style.display = "none";
-    usersNav.style.display = "none";
   } else if (currentUser.role === "tournament") {
     salesNav.style.display = "none";
     backupNav.style.display = "none";
-    usersNav.style.display = "none";
   } else {
     // admin sees everything
     salesNav.style.display = "";
     rmNav.style.display = "";
+    clientsNav.style.display = "";
     progressNav.style.display = "";
     backupNav.style.display = "";
-    usersNav.style.display = "";
   }
+  // Users tab: only Suresh/Sesha specifically, regardless of anyone else's admin role.
+  usersNav.style.display = isSuperAdmin() ? "" : "none";
 }
 
 function canEditSales() { return currentUser.role === "admin" || currentUser.role === "sales"; }
@@ -182,7 +231,7 @@ function attachListeners() {
   }));
   unsubs.push(onSnapshot(query(collection(db, "rmContacts"), orderBy("createdAt", "desc")), snap => {
     rmContacts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (currentView === "dashboard" || currentView === "rm") render();
+    if (currentView === "dashboard" || currentView === "rm" || currentView === "clients") render();
   }));
   unsubs.push(onSnapshot(collection(db, "tournaments"), snap => {
     tournaments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -198,7 +247,7 @@ function attachListeners() {
     progressDocs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     if (currentView === "progress") render();
   }));
-  if (currentUser.role === "admin") {
+  if (isSuperAdmin()) {
     unsubs.push(onSnapshot(collection(db, "users"), snap => {
       appUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       if (currentView === "users") render();
@@ -214,6 +263,7 @@ function render() {
   if (currentView === "dashboard") return renderDashboard();
   if (currentView === "sales") return renderSales();
   if (currentView === "rm") return renderRM();
+  if (currentView === "clients") return renderClients();
   if (currentView === "progress") return renderProgress();
   if (currentView === "backup") return renderBackup();
   if (currentView === "users") return renderUsers();
@@ -258,6 +308,17 @@ function renderDashboard() {
         </div>
       </div>
 
+      <div class="chart-row">
+        <div class="panel chart-box">
+          <div class="panel-title">Pipeline by Category</div>
+          <canvas id="chart-funnel"></canvas>
+        </div>
+        <div class="panel chart-box">
+          <div class="panel-title">Enrolled vs Rejected</div>
+          <canvas id="chart-outcome"></canvas>
+        </div>
+      </div>
+
       <div class="panel">
         <div class="panel-title">By Category</div>
         <div class="funnel-grid" style="grid-template-columns:repeat(3,1fr);">
@@ -275,6 +336,59 @@ function renderDashboard() {
       </div>
     </div>
   `;
+
+  renderDashboardCharts();
+}
+
+let funnelChartInstance = null, outcomeChartInstance = null;
+function renderDashboardCharts() {
+  if (typeof Chart === "undefined") return;
+  const funnelCtx = document.getElementById("chart-funnel");
+  const outcomeCtx = document.getElementById("chart-outcome");
+  if (funnelChartInstance) funnelChartInstance.destroy();
+  if (outcomeChartInstance) outcomeChartInstance.destroy();
+
+  const gridColor = "rgba(255,255,255,0.06)";
+  const textColor = "#A9C2AF";
+
+  funnelChartInstance = new Chart(funnelCtx, {
+    type: "bar",
+    data: {
+      labels: CATEGORIES.map(c => c.label),
+      datasets: STAGES.map((stage, i) => ({
+        label: stage.charAt(0).toUpperCase() + stage.slice(1),
+        data: CATEGORIES.map(c => salesLeads.filter(l => l.category === c.key && l.stage === stage).length),
+        backgroundColor: ["#5B8CFF", "#7ED321", "#FF6B5E", "#3ECF8E"][i],
+        borderRadius: 4
+      }))
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: textColor, font: { size: 11 } } } },
+      scales: {
+        x: { stacked: true, ticks: { color: textColor }, grid: { display: false } },
+        y: { stacked: true, ticks: { color: textColor, stepSize: 1 }, grid: { color: gridColor } }
+      }
+    }
+  });
+
+  const enrolledCount = salesLeads.filter(l => l.stage === "enrolled").length;
+  const rejectedCount = salesLeads.filter(l => l.stage === "rejected").length;
+  outcomeChartInstance = new Chart(outcomeCtx, {
+    type: "doughnut",
+    data: {
+      labels: ["Enrolled", "Rejected", "Still in progress"],
+      datasets: [{
+        data: [enrolledCount, rejectedCount, salesLeads.length - enrolledCount - rejectedCount],
+        backgroundColor: ["#3ECF8E", "#FF6B5E", "#2E5B3F"],
+        borderWidth: 0
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: "bottom", labels: { color: textColor, font: { size: 11 } } } }
+    }
+  });
 }
 
 // ---------------------------------------------------------------
@@ -285,7 +399,7 @@ function renderSales() {
   root.innerHTML = `
     <div class="view">
       <div class="page-header">
-        <div><div class="page-title">Sales Pipeline</div><div class="page-desc">Track outreach through to enrollment</div></div>
+        <div><div class="page-title">Contacts</div><div class="page-desc">Track outreach through to enrollment</div></div>
         ${canEditSales() ? `<button class="btn btn-primary" id="add-lead-btn">+ Add Contact</button>` : ""}
       </div>
       <div class="court-rule"></div>
@@ -357,19 +471,21 @@ function openLeadModal(id) {
         updatedAt: serverTimestamp()
       };
       if (!payload.name) { alert("Name is required."); return; }
-      if (lead) {
-        await updateDoc(doc(db, "salesLeads", lead.id), payload);
-      } else {
-        payload.createdAt = serverTimestamp();
-        await addDoc(collection(db, "salesLeads"), payload);
-      }
-      closeModal();
+      try {
+        if (lead) {
+          await safeUpdate("salesLeads", lead.id, payload);
+        } else {
+          payload.createdAt = serverTimestamp();
+          await safeAdd("salesLeads", payload);
+        }
+        closeModal();
+      } catch (err) { /* toasted already */ }
     });
     if (lead) {
       document.getElementById("m-delete").addEventListener("click", async () => {
         if (confirm("Delete this contact permanently?")) {
-          await deleteDoc(doc(db, "salesLeads", lead.id));
-          closeModal();
+          try { await safeDelete("salesLeads", lead.id); closeModal(); }
+          catch (err) { /* toasted already */ }
         }
       });
     }
@@ -408,7 +524,7 @@ function renderRM() {
         ${CATEGORIES.map(c => `<button class="tabbtn ${currentRmTab===c.key?"active":""}" data-tab="${c.key}">${c.label}</button>`).join("")}
       </div>
 
-      ${canEditRM() ? `<button class="btn btn-ghost btn-sm" id="register-btn" style="margin-bottom:14px;">+ Register existing contact</button>` : ""}
+      ${canEditRM() ? `<button class="btn btn-ghost btn-sm" id="register-btn" style="margin-bottom:14px;">+ Register for tournament</button>` : ""}
 
       <div class="rm-list">
         ${rows.map((r, idx) => `
@@ -417,7 +533,7 @@ function renderRM() {
             ${canEditPriority() ? `<button class="star-btn ${r.priority?"on":""}" data-reg="${r.id}" data-action="star">★</button>` : (r.priority ? `<span style="color:var(--gold);">★</span>` : "")}
             <span class="rname">${escapeHtml(r.contact.name)}</span>
             <span class="rmeta">${escapeHtml(r.contact.contact||"")}</span>
-            <span class="badge ${r.contact.tier==="paid"?"paid":"free"}">${r.contact.tier==="paid"?"Paid":"Free"}</span>
+            <span class="badge ${r.contact.plan==="paid"?"paid":r.contact.plan==="demo"?"demo":"free"}">${PLANS.find(p=>p.key===r.contact.plan)?.label || "Free Tier"}</span>
             ${canEditPriority() ? `
               <button class="arrow-btn" data-reg="${r.id}" data-action="up">↑</button>
               <button class="arrow-btn" data-reg="${r.id}" data-action="down">↓</button>
@@ -435,32 +551,36 @@ function renderRM() {
   document.getElementById("add-tourney-btn")?.addEventListener("click", openTournamentModal);
   document.getElementById("del-tourney-btn")?.addEventListener("click", async () => {
     if (confirm("Delete this tournament and all its registrations?")) {
-      await deleteDoc(doc(db, "tournaments", selectedTournamentId));
-      const regs = registrations.filter(r => r.tournamentId === selectedTournamentId);
-      for (const r of regs) await deleteDoc(doc(db, "registrations", r.id));
-      selectedTournamentId = null;
+      try {
+        await safeDelete("tournaments", selectedTournamentId);
+        const regs = registrations.filter(r => r.tournamentId === selectedTournamentId);
+        for (const r of regs) await safeDelete("registrations", r.id);
+        selectedTournamentId = null;
+      } catch (err) { /* toasted already */ }
     }
   });
   document.getElementById("register-btn")?.addEventListener("click", () => openRegisterModal());
 
   root.querySelectorAll("[data-action]").forEach(btn => {
     btn.addEventListener("click", async () => {
-      const regId = btn.dataset.reg;
-      const action = btn.dataset.action;
-      const reg = registrations.find(r => r.id === regId);
-      if (action === "star") await updateDoc(doc(db, "registrations", regId), { priority: !reg.priority });
-      if (action === "unregister" && confirm("Remove this registration?")) await deleteDoc(doc(db, "registrations", regId));
-      if (action === "edit-contact") openEditContactModal(btn.dataset.contact);
-      if (action === "up" || action === "down") {
-        const list = rows;
-        const i = list.findIndex(r => r.id === regId);
-        const swapWith = action === "up" ? i - 1 : i + 1;
-        if (swapWith >= 0 && swapWith < list.length) {
-          const a = list[i], b = list[swapWith];
-          await updateDoc(doc(db, "registrations", a.id), { priorityRank: swapWith });
-          await updateDoc(doc(db, "registrations", b.id), { priorityRank: i });
+      try {
+        const regId = btn.dataset.reg;
+        const action = btn.dataset.action;
+        const reg = registrations.find(r => r.id === regId);
+        if (action === "star") await safeUpdate("registrations", regId, { priority: !reg.priority });
+        if (action === "unregister" && confirm("Remove this registration?")) await safeDelete("registrations", regId);
+        if (action === "edit-contact") openEditContactModal(btn.dataset.contact);
+        if (action === "up" || action === "down") {
+          const list = rows;
+          const i = list.findIndex(r => r.id === regId);
+          const swapWith = action === "up" ? i - 1 : i + 1;
+          if (swapWith >= 0 && swapWith < list.length) {
+            const a = list[i], b = list[swapWith];
+            await safeUpdate("registrations", a.id, { priorityRank: swapWith });
+            await safeUpdate("registrations", b.id, { priorityRank: i });
+          }
         }
-      }
+      } catch (err) { /* already toasted by safe* wrapper */ }
     });
   });
 }
@@ -482,12 +602,14 @@ function openTournamentModal() {
   document.getElementById("m-save").addEventListener("click", async () => {
     const name = document.getElementById("t-name").value.trim();
     if (!name) { alert("Name required."); return; }
-    const ref = await addDoc(collection(db, "tournaments"), {
-      name, date: document.getElementById("t-date").value, location: document.getElementById("t-location").value.trim(),
-      createdAt: serverTimestamp()
-    });
-    selectedTournamentId = ref.id;
-    closeModal();
+    try {
+      const ref = await safeAdd("tournaments", {
+        name, date: document.getElementById("t-date").value, location: document.getElementById("t-location").value.trim(),
+        createdAt: serverTimestamp()
+      });
+      selectedTournamentId = ref.id;
+      closeModal();
+    } catch (err) { /* toasted already */ }
   });
 }
 
@@ -496,41 +618,70 @@ function openRegisterModal() {
   const pool = rmContacts.filter(c => c.category === currentRmTab && !already.has(c.id));
   showModal(`
     <h3>Register for ${escapeHtml(tournaments.find(t=>t.id===selectedTournamentId)?.name||"")}</h3>
-    <div class="field">
-      <label>Existing contact</label>
-      <select id="reg-contact">${pool.length ? pool.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("") : `<option value="">No available contacts — add one below</option>`}</select>
+    <div class="mode-toggle">
+      <button type="button" class="active" data-mode="existing">Existing contact</button>
+      <button type="button" data-mode="new">Add new contact</button>
     </div>
-    <div class="access-note">Don't see who you need? Add a new relationship-management contact:</div>
-    <div class="form-grid">
-      <div class="field full"><label>New contact name</label><input id="new-c-name" placeholder="Leave blank to use selection above"></div>
-      <div class="field full"><label>Contact info</label><input id="new-c-contact"></div>
-      <div class="field full"><label>Tier</label>
-        <select id="new-c-tier"><option value="free">Free tier</option><option value="paid">Paid</option></select>
+
+    <div id="mode-existing">
+      <div class="field">
+        <label>Choose contact</label>
+        <select id="reg-contact">${pool.length ? pool.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("") : `<option value="">No available contacts — switch to "Add new contact"</option>`}</select>
       </div>
     </div>
+
+    <div id="mode-new" class="hidden">
+      <div class="form-grid">
+        <div class="field full"><label>Name</label><input id="new-c-name" placeholder="Full name"></div>
+        <div class="field full"><label>Contact info</label><input id="new-c-contact" placeholder="Phone / email"></div>
+        <div class="field full"><label>Plan</label>
+          <select id="new-c-plan">${PLANS.map(p=>`<option value="${p.key}">${p.label}</option>`).join("")}</select>
+        </div>
+        <div class="field full"><label>Cost (optional)</label><input id="new-c-cost" placeholder="e.g. ₹2,000/month"></div>
+      </div>
+    </div>
+
     <div class="modal-actions">
       <button class="btn btn-ghost" id="m-cancel">Cancel</button>
       <button class="btn btn-primary" id="m-save">Register</button>
     </div>
   `);
   document.getElementById("m-cancel").addEventListener("click", closeModal);
-  document.getElementById("m-save").addEventListener("click", async () => {
-    let contactId = document.getElementById("reg-contact").value;
-    const newName = document.getElementById("new-c-name").value.trim();
-    if (newName) {
-      const ref = await addDoc(collection(db, "rmContacts"), {
-        name: newName, category: currentRmTab, contact: document.getElementById("new-c-contact").value.trim(),
-        tier: document.getElementById("new-c-tier").value,
-        createdAt: serverTimestamp()
-      });
-      contactId = ref.id;
-    }
-    if (!contactId) { alert("Choose or add a contact."); return; }
-    await addDoc(collection(db, "registrations"), {
-      tournamentId: selectedTournamentId, contactId, category: currentRmTab,
-      priority: false, priorityRank: 0, registeredAt: serverTimestamp()
+
+  let mode = "existing";
+  document.querySelectorAll(".mode-toggle button").forEach(b => {
+    b.addEventListener("click", () => {
+      mode = b.dataset.mode;
+      document.querySelectorAll(".mode-toggle button").forEach(x => x.classList.toggle("active", x === b));
+      document.getElementById("mode-existing").classList.toggle("hidden", mode !== "existing");
+      document.getElementById("mode-new").classList.toggle("hidden", mode !== "new");
     });
-    closeModal();
+  });
+
+  document.getElementById("m-save").addEventListener("click", async () => {
+    try {
+      let contactId;
+      if (mode === "new") {
+        const newName = document.getElementById("new-c-name").value.trim();
+        if (!newName) { alert("Enter a name for the new contact."); return; }
+        const ref = await safeAdd("rmContacts", {
+          name: newName, category: currentRmTab,
+          contact: document.getElementById("new-c-contact").value.trim(),
+          plan: document.getElementById("new-c-plan").value,
+          cost: document.getElementById("new-c-cost").value.trim(),
+          createdAt: serverTimestamp()
+        });
+        contactId = ref.id;
+      } else {
+        contactId = document.getElementById("reg-contact").value;
+        if (!contactId) { alert("Choose a contact, or switch to \"Add new contact\"."); return; }
+      }
+      await safeAdd("registrations", {
+        tournamentId: selectedTournamentId, contactId, category: currentRmTab,
+        priority: false, priorityRank: 0, registeredAt: serverTimestamp()
+      });
+      closeModal();
+    } catch (err) { /* toasted already */ }
   });
 }
 
@@ -542,12 +693,12 @@ function openEditContactModal(contactId) {
     <div class="form-grid">
       <div class="field full"><label>Name</label><input id="ec-name" value="${escapeAttr(contact.name)}"></div>
       <div class="field full"><label>Contact info</label><input id="ec-contact" value="${escapeAttr(contact.contact||"")}"></div>
-      <div class="field full"><label>Tier</label>
-        <select id="ec-tier">
-          <option value="free" ${contact.tier!=="paid"?"selected":""}>Free tier</option>
-          <option value="paid" ${contact.tier==="paid"?"selected":""}>Paid</option>
+      <div class="field full"><label>Plan</label>
+        <select id="ec-plan">
+          ${PLANS.map(p => `<option value="${p.key}" ${(contact.plan||"free")===p.key?"selected":""}>${p.label}</option>`).join("")}
         </select>
       </div>
+      <div class="field full"><label>Cost (optional)</label><input id="ec-cost" value="${escapeAttr(contact.cost||"")}" placeholder="e.g. ₹2,000/month"></div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="m-cancel">Cancel</button>
@@ -558,12 +709,71 @@ function openEditContactModal(contactId) {
   document.getElementById("m-save").addEventListener("click", async () => {
     const name = document.getElementById("ec-name").value.trim();
     if (!name) { alert("Name is required."); return; }
-    await updateDoc(doc(db, "rmContacts", contactId), {
-      name, contact: document.getElementById("ec-contact").value.trim(),
-      tier: document.getElementById("ec-tier").value
-    });
-    closeModal();
+    try {
+      await safeUpdate("rmContacts", contactId, {
+        name, contact: document.getElementById("ec-contact").value.trim(),
+        plan: document.getElementById("ec-plan").value,
+        cost: document.getElementById("ec-cost").value.trim()
+      });
+      closeModal();
+    } catch (err) { /* toasted already */ }
   });
+}
+
+// ---------------------------------------------------------------
+// CLIENTS — every parent/athlete/academy contact, categorized by
+// subscription plan (free tier / demo trial / paid). Registering
+// someone for a tournament (new-contact mode) also creates them here,
+// since both views read the same rmContacts collection.
+// ---------------------------------------------------------------
+let currentClientsCatFilter = "all";
+let currentClientsPlanFilter = "all";
+
+function renderClients() {
+  let list = rmContacts.slice();
+  if (currentClientsCatFilter !== "all") list = list.filter(c => c.category === currentClientsCatFilter);
+  if (currentClientsPlanFilter !== "all") list = list.filter(c => (c.plan || "free") === currentClientsPlanFilter);
+
+  const countFor = (cat, plan) => rmContacts.filter(c => (cat==="all"||c.category===cat) && (plan==="all"||(c.plan||"free")===plan)).length;
+
+  root.innerHTML = `
+    <div class="view">
+      <div class="page-header">
+        <div><div class="page-title">Clients</div><div class="page-desc">Every contact across categories, tracked by subscription plan</div></div>
+      </div>
+      <div class="court-rule"></div>
+
+      <div class="stat-grid">
+        ${PLANS.map(p => `<div class="stat-card countup"><div class="stat-label">${p.label}</div><div class="stat-value">${countFor("all", p.key)}</div></div>`).join("")}
+      </div>
+
+      <div class="tabbar">
+        <button class="tabbtn ${currentClientsCatFilter==="all"?"active":""}" data-catfilter="all">All</button>
+        ${CATEGORIES.map(c => `<button class="tabbtn ${currentClientsCatFilter===c.key?"active":""}" data-catfilter="${c.key}">${c.label}</button>`).join("")}
+      </div>
+      <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+        <button class="btn btn-sm ${currentClientsPlanFilter==="all"?"btn-primary":"btn-ghost"}" data-planfilter="all">All plans</button>
+        ${PLANS.map(p => `<button class="btn btn-sm ${currentClientsPlanFilter===p.key?"btn-primary":"btn-ghost"}" data-planfilter="${p.key}">${p.label}</button>`).join("")}
+      </div>
+
+      <div class="rm-list">
+        ${list.map(c => `
+          <div class="rm-row">
+            <span class="rname">${escapeHtml(c.name)}</span>
+            <span class="rmeta">${CATEGORIES.find(x=>x.key===c.category)?.label || c.category}</span>
+            <span class="rmeta">${escapeHtml(c.contact||"")}</span>
+            ${c.cost ? `<span class="rmeta">${escapeHtml(c.cost)}</span>` : ""}
+            <span class="badge ${c.plan==="paid"?"paid":c.plan==="demo"?"demo":"free"}">${PLANS.find(p=>p.key===(c.plan||"free"))?.label}</span>
+            ${canEditRM() ? `<button class="btn btn-ghost btn-sm" data-contact="${c.id}" data-action="edit-client">Edit</button>` : ""}
+          </div>
+        `).join("") || `<div class="empty-state">No clients match this filter yet</div>`}
+      </div>
+    </div>
+  `;
+
+  root.querySelectorAll("[data-catfilter]").forEach(b => b.addEventListener("click", () => { currentClientsCatFilter = b.dataset.catfilter; renderClients(); }));
+  root.querySelectorAll("[data-planfilter]").forEach(b => b.addEventListener("click", () => { currentClientsPlanFilter = b.dataset.planfilter; renderClients(); }));
+  root.querySelectorAll("[data-action='edit-client']").forEach(b => b.addEventListener("click", () => openEditContactModal(b.dataset.contact)));
 }
 
 // ---------------------------------------------------------------
@@ -578,7 +788,7 @@ function renderProgress() {
   root.innerHTML = `
     <div class="view">
       <div class="page-header">
-        <div><div class="page-title">Video Pipeline</div><div class="page-desc">Inferencing → Annotation → Report Generation → Report Sent</div></div>
+        <div><div class="page-title">Deliverables</div><div class="page-desc">Inferencing → Annotation → Report Generation → Report Sent</div></div>
       </div>
       <div class="court-rule"></div>
       ${!canEditProgress() ? `<div class="access-note">View-only access.</div>` : ""}
@@ -610,28 +820,32 @@ function renderProgress() {
   if (canEditProgress()) {
     root.querySelectorAll(".status-dot").forEach(dot => {
       dot.addEventListener("click", async () => {
-        const rowEl = dot.closest(".progress-row");
-        const contactId = rowEl.dataset.contact, tournamentId = rowEl.dataset.tourney;
-        const stepKey = dot.dataset.step;
-        let existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
-        const newVal = !(existing && existing[stepKey]);
-        if (existing) {
-          await updateDoc(doc(db, "progress", existing.id), { [stepKey]: newVal, updatedAt: serverTimestamp() });
-        } else {
-          await addDoc(collection(db, "progress"), { contactId, tournamentId, [stepKey]: newVal, updatedAt: serverTimestamp() });
-        }
+        try {
+          const rowEl = dot.closest(".progress-row");
+          const contactId = rowEl.dataset.contact, tournamentId = rowEl.dataset.tourney;
+          const stepKey = dot.dataset.step;
+          let existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
+          const newVal = !(existing && existing[stepKey]);
+          if (existing) {
+            await safeUpdate("progress", existing.id, { [stepKey]: newVal, updatedAt: serverTimestamp() });
+          } else {
+            await safeAdd("progress", { contactId, tournamentId, [stepKey]: newVal, updatedAt: serverTimestamp() });
+          }
+        } catch (err) { /* toasted already */ }
       });
     });
     root.querySelectorAll(".annotator-select").forEach(sel => {
       sel.addEventListener("change", async () => {
-        const rowEl = sel.closest(".progress-row");
-        const contactId = rowEl.dataset.contact, tournamentId = rowEl.dataset.tourney;
-        let existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
-        if (existing) {
-          await updateDoc(doc(db, "progress", existing.id), { annotator: sel.value, updatedAt: serverTimestamp() });
-        } else {
-          await addDoc(collection(db, "progress"), { contactId, tournamentId, annotator: sel.value, updatedAt: serverTimestamp() });
-        }
+        try {
+          const rowEl = sel.closest(".progress-row");
+          const contactId = rowEl.dataset.contact, tournamentId = rowEl.dataset.tourney;
+          let existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
+          if (existing) {
+            await safeUpdate("progress", existing.id, { annotator: sel.value, updatedAt: serverTimestamp() });
+          } else {
+            await safeAdd("progress", { contactId, tournamentId, annotator: sel.value, updatedAt: serverTimestamp() });
+          }
+        } catch (err) { /* toasted already */ }
       });
     });
   }
@@ -643,12 +857,19 @@ function renderProgress() {
 function renderBackup() {
   root.innerHTML = `
     <div class="view">
-      <div class="page-header"><div><div class="page-title">Backup</div><div class="page-desc">Export a full snapshot of the database as JSON</div></div></div>
+      <div class="page-header"><div><div class="page-title">Backup</div><div class="page-desc">Export or restore a full snapshot of the database as JSON</div></div></div>
       <div class="court-rule"></div>
       <div class="panel">
         <div class="panel-title">Export</div>
-        <p style="color:var(--chalk-dim); font-size:13px; margin-bottom:14px;">Downloads sales leads, relationship contacts, tournaments, registrations, and video-pipeline progress in one file. Do this at month-end and store it somewhere safe.</p>
+        <p style="color:var(--chalk-dim); font-size:13px; margin-bottom:14px;">Downloads sales leads, relationship contacts, tournaments, registrations, and deliverables progress in one file. Do this at month-end and store it somewhere safe.</p>
         <button class="btn btn-primary" id="export-btn">Download Backup (.json)</button>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Restore from JSON</div>
+        <p style="color:var(--chalk-dim); font-size:13px; margin-bottom:14px;">Upload a backup file exported from this app. This <b>adds</b> the records back into the database — it does not delete what's currently there, so you may get duplicates if you restore the same file twice.</p>
+        <input type="file" id="import-file" accept="application/json" style="margin-bottom:12px; color:var(--chalk-dim); font-size:13px;">
+        <div><button class="btn btn-primary" id="import-btn">Restore from file</button></div>
+        <div id="import-status" style="font-size:13px; color:var(--chalk-dim); margin-top:10px;"></div>
       </div>
     </div>
   `;
@@ -658,9 +879,40 @@ function renderBackup() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `visist-crm-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.download = `visisthub-backup-${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  });
+
+  document.getElementById("import-btn").addEventListener("click", async () => {
+    const fileInput = document.getElementById("import-file");
+    const status = document.getElementById("import-status");
+    const file = fileInput.files[0];
+    if (!file) { status.textContent = "Choose a .json file first."; return; }
+    status.textContent = "Reading file…";
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!confirm("This will add every record in this file back into the live database. Continue?")) { status.textContent = ""; return; }
+      status.textContent = "Restoring…";
+      const collectionsMap = {
+        salesLeads: data.salesLeads, rmContacts: data.rmContacts, tournaments: data.tournaments,
+        registrations: data.registrations, progress: data.progress
+      };
+      let count = 0;
+      for (const [colName, records] of Object.entries(collectionsMap)) {
+        if (!Array.isArray(records)) continue;
+        for (const rec of records) {
+          const { id, ...fields } = rec;
+          await safeAdd(colName, fields);
+          count++;
+        }
+      }
+      status.textContent = `Restored ${count} records.`;
+    } catch (err) {
+      status.textContent = "Couldn't restore that file — make sure it's a backup exported from this app.";
+      console.error(err);
+    }
   });
 }
 
@@ -669,8 +921,8 @@ function renderBackup() {
 // the Firebase console.
 // ---------------------------------------------------------------
 function renderUsers() {
-  if (currentUser.role !== "admin") {
-    root.innerHTML = `<div class="view"><div class="access-note">Admins only.</div></div>`;
+  if (!isSuperAdmin()) {
+    root.innerHTML = `<div class="view"><div class="access-note">This section is restricted.</div></div>`;
     return;
   }
   root.innerHTML = `
@@ -680,7 +932,7 @@ function renderUsers() {
         <button class="btn btn-primary" id="add-user-btn">+ Add User</button>
       </div>
       <div class="court-rule"></div>
-      <div class="access-note">Roles: <b>admin</b> (full access) · <b>sales</b> (Sales Pipeline only) · <b>tournament</b> (Relationships, priority, video pipeline) · <b>disabled</b> (blocks sign-in).</div>
+      <div class="access-note">Roles: <b>admin</b> (full access) · <b>sales</b> (Contacts only) · <b>tournament</b> (Relationships, priority, Deliverables) · <b>disabled</b> (blocks sign-in). This panel is only visible to Suresh and Sesha.</div>
       <div class="rm-list">
         ${appUsers.map(u => `
           <div class="rm-row">
@@ -704,7 +956,8 @@ function renderUsers() {
   document.getElementById("add-user-btn").addEventListener("click", openAddUserModal);
   root.querySelectorAll(".role-select").forEach(sel => {
     sel.addEventListener("change", async () => {
-      await updateDoc(doc(db, "users", sel.dataset.uid), { role: sel.value });
+      try { await safeUpdate("users", sel.dataset.uid, { role: sel.value }); }
+      catch (err) { /* toasted already */ }
     });
   });
 }
@@ -748,7 +1001,7 @@ function openAddUserModal() {
     const secondaryAuth = getAuth(secondaryApp);
     try {
       const cred = await createUserWithEmailAndPassword(secondaryAuth, usernameToEmail(username), password);
-      await setDoc(doc(db, "users", cred.user.uid), { name, username, role, createdAt: serverTimestamp() });
+      await safeSet("users", cred.user.uid, { name, username, role, createdAt: serverTimestamp() });
       await signOut(secondaryAuth);
       closeModal();
     } catch (err) {
