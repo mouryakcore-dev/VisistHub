@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
 <title>VisistHub</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0E1B2E">
@@ -77,11 +80,21 @@ input, select, textarea{ font-family: var(--body); }
 }
 .login-court{
   position:absolute; inset:0; overflow:hidden; pointer-events:none;
+  background: linear-gradient(-45deg, #071510, #0F241B, #143122, #071510);
+  background-size: 400% 400%;
+  animation: ambient-shift 12s ease infinite;
+}
+@keyframes ambient-shift{
+  0%{ background-position: 0% 50%; }
+  50%{ background-position: 100% 50%; }
+  100%{ background-position: 0% 50%; }
 }
 .login-court video{
   position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
   filter: brightness(0.4) saturate(1.1);
+  opacity:0; transition: opacity .6s ease;
 }
+.login-court video.ready{ opacity:1; }
 .login-court::after{
   content:''; position:absolute; inset:0;
   background: radial-gradient(1000px 600px at 50% 40%, transparent, var(--bg) 85%);
@@ -285,15 +298,62 @@ textarea{ min-height:70px; resize:vertical; }
 .mode-toggle button.active{ background:var(--surface); color:var(--gold); }
 
 .badge.demo{ background: rgba(91,140,255,0.15); color:var(--blue); }
+.badge.tier-demo{ background: rgba(91,140,255,0.15); color:var(--blue); }
+.badge.tier-mid{ background: rgba(169,194,175,0.18); color:var(--chalk-dim); }
+.badge.tier-high{ background: rgba(126,211,33,0.18); color:var(--gold); }
+.badge.tier-top{ background: rgba(62,207,142,0.18); color:var(--green); }
+
+/* Plan pill picker (replaces plain <select> for choosing a plan) */
+.plan-picker{ display:flex; flex-wrap:wrap; gap:8px; }
+.plan-pill{
+  padding:9px 14px; border-radius:20px; border:1px solid var(--line); background:var(--surface-2);
+  color:var(--chalk-dim); font-size:13px; font-weight:600; transition: all .15s;
+}
+.plan-pill:hover{ border-color:var(--line-bright); }
+.plan-pill.selected{ background: var(--gold); border-color: var(--gold); color:#1A1204; }
+
+/* Contact search picker (replaces plain <select> for choosing an existing contact) */
+.picker-btn{ width:100%; text-align:left; display:flex; justify-content:space-between; align-items:center; }
+.picker-panel{ margin-top:10px; background:var(--surface-2); border:1px solid var(--line); border-radius:var(--radius); padding:10px; }
+.picker-results{ max-height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+.picker-row{ display:flex; justify-content:space-between; align-items:center; padding:9px 10px; border-radius:8px; background:var(--surface); cursor:pointer; border:1px solid transparent; }
+.picker-row:hover{ border-color:var(--line-bright); }
+.picker-row .prname{ font-weight:600; font-size:13px; }
+.picker-row .prmeta{ font-size:11px; color:var(--chalk-faint); }
+
+/* Phone field with country code */
+.phone-field{ display:flex; gap:8px; }
+.phone-field select{ flex:0 0 130px; }
+.phone-field input{ flex:1; }
+.field-error{ color:var(--coral); font-size:12px; margin-top:4px; }
+
+/* Video source chips (Deliverables) */
+.video-sources{ margin: 10px 0 14px; }
+.video-sources label{ font-size:11px; color:var(--chalk-faint); text-transform:uppercase; letter-spacing:0.05em; }
+.source-chips{ display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
+.source-chip{ background:var(--surface-2); border:1px solid var(--line); border-radius:20px; padding:5px 10px; font-size:12px; color:var(--chalk-dim); display:flex; align-items:center; gap:6px; }
+.source-chip button{ background:none; border:none; color:var(--chalk-faint); font-size:13px; line-height:1; }
+.source-add{ display:flex; gap:8px; }
+.source-add input{ flex:1; padding:7px 10px; background:var(--surface-2); border:1px solid var(--line); border-radius:8px; color:var(--chalk); font-size:12px; }
+.progress-card{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-lg); padding:16px 18px; margin-bottom:12px; }
+.progress-head{ display:flex; align-items:center; gap:10px; margin-bottom:4px; flex-wrap:wrap; }
+.progress-head .pname{ font-weight:700; font-size:15px; }
+.progress-head .ptourney{ font-size:12px; color:var(--chalk-faint); }
 
 @media (max-width: 900px){
-  #sidebar{ position:fixed; left:-236px; z-index:80; transition:left .2s; box-shadow:var(--shadow); }
+  #sidebar{ position:fixed; left:-236px; z-index:80; transition:left .2s; box-shadow:var(--shadow);
+    padding-top: calc(22px + env(safe-area-inset-top));
+    padding-bottom: calc(22px + env(safe-area-inset-bottom));
+  }
   #sidebar.open{ left:0; }
-  #main{ padding:20px 16px 60px; }
+  #main{ padding:20px 16px 60px; padding-top: calc(20px + env(safe-area-inset-top)); }
   .funnel-grid{ grid-template-columns:1fr 1fr; }
   #menu-toggle{ display:flex !important; }
   .progress-row{ flex-wrap:wrap; }
+  .chart-row{ grid-template-columns:1fr; }
+  .stat-grid{ grid-template-columns:repeat(2,1fr); }
 }
+.login-card{ margin: env(safe-area-inset-top) 16px env(safe-area-inset-bottom); }
 #menu-toggle{ display:none; background:var(--surface); border:1px solid var(--line); color:var(--chalk); width:38px; height:38px; border-radius:8px; align-items:center; justify-content:center; margin-bottom:14px; }
 </style>
 </head>
@@ -302,7 +362,7 @@ textarea{ min-height:70px; resize:vertical; }
 <!-- ============ LOGIN ============ -->
 <div id="login-screen">
   <div class="login-court">
-    <video autoplay muted loop playsinline src="assets/login-bg.mp4"></video>
+    <video id="login-bg-video" autoplay muted loop playsinline webkit-playsinline="true" preload="auto" src="login-bg.mp4"></video>
   </div>
   <div class="login-card">
     <div class="login-brand">VisistHub</div>

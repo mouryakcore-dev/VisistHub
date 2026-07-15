@@ -1,9 +1,9 @@
 {
-  "name": "Visist CRM",
-  "short_name": "Visist CRM",
+  "name": "VisistHub",
+  "short_name": "VisistHub",
   "start_url": "./app.html",
   "display": "standalone",
-  "background_color": "#0B1524",
-  "theme_color": "#0E1B2E",
+  "background_color": "#071510",
+  "theme_color": "#0F241B",
   "icons": []
 }

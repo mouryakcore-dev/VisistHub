@@ -5,11 +5,30 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
   getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot,
-  getDoc, setDoc, query, orderBy, serverTimestamp
+  getDoc, setDoc, query, orderBy, serverTimestamp, arrayUnion, arrayRemove
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// ---------------------------------------------------------------
+// LOGIN BACKGROUND VIDEO — handle autoplay quirks across iOS/Android/
+// desktop. The CSS gradient behind it always animates regardless, so
+// there's motion even if the video can't play for any reason.
+// ---------------------------------------------------------------
+(function setupLoginVideo() {
+  const video = document.getElementById("login-bg-video");
+  if (!video) return;
+  video.muted = true;
+  video.playsInline = true;
+  video.addEventListener("playing", () => video.classList.add("ready"));
+  video.addEventListener("error", () => console.warn("Login background video failed to load — check assets/login-bg.mp4 was pushed to the repo."));
+  const tryPlay = () => video.play().catch(() => { /* autoplay blocked; gradient fallback still shows */ });
+  tryPlay();
+  // Some mobile browsers only allow playback after the first user gesture.
+  document.addEventListener("click", tryPlay, { once: true });
+  document.addEventListener("touchstart", tryPlay, { once: true });
+})();
 
 // ---------------------------------------------------------------
 // STATE
@@ -28,11 +47,106 @@ const STEP_KEYS = [
 ];
 const ANNOTATORS = ["Mourya", "Keerthi", "Benoush", "Srinivas V", "Srinivas P", "Harkhraj"];
 const VALID_ROLES = ["admin", "sales", "tournament"];
-const PLANS = [
-  { key: "free", label: "Free Tier" },
-  { key: "demo", label: "Demo Trial" },
-  { key: "paid", label: "Paid" }
+const PLAN_DEFS = {
+  demo:        { label: "Demo / Free Trial", applies: ["parent","athlete"], tier: "demo" },
+  foundation:  { label: "Foundation",        applies: ["parent","athlete"], tier: "mid"  },
+  performance: { label: "Performance",       applies: ["parent","athlete"], tier: "high" },
+  elite:       { label: "Elite",             applies: ["parent","athlete"], tier: "top"  },
+  demo_pilot:  { label: "Demo Pilot",        applies: ["academy"],          tier: "demo" },
+  super25:     { label: "Super 25",          applies: ["academy"],          tier: "mid"  },
+  super100:    { label: "Super 100",         applies: ["academy"],          tier: "high" },
+  super500:    { label: "Super 500",         applies: ["academy"],          tier: "top"  }
+};
+function plansForCategory(cat) {
+  return Object.entries(PLAN_DEFS).filter(([,v]) => v.applies.includes(cat)).map(([key,v]) => ({ key, ...v }));
+}
+function allPlanDefs() {
+  return Object.entries(PLAN_DEFS).map(([key,v]) => ({ key, ...v }));
+}
+function planLabel(key) { return PLAN_DEFS[key]?.label || "Not set"; }
+function planTierClass(key) { return "tier-" + (PLAN_DEFS[key]?.tier || "demo"); }
+
+const COUNTRY_CODES = [
+  { code: "+91", name: "India", digits: 10 },
+  { code: "+1", name: "USA / Canada", digits: 10 },
+  { code: "+44", name: "UK", digits: 10 },
+  { code: "+971", name: "UAE", digits: 9 },
+  { code: "+61", name: "Australia", digits: 9 },
+  { code: "+65", name: "Singapore", digits: 8 }
 ];
+
+function splitPhone(full) {
+  if (!full) return { code: "+91", number: "" };
+  const m = String(full).trim().match(/^(\+\d{1,4})\s*(.*)$/);
+  if (m) return { code: m[1], number: m[2].replace(/\D/g, "") };
+  return { code: "+91", number: String(full).replace(/\D/g, "") };
+}
+function renderPhoneFieldHTML(prefix, existingFull) {
+  const { code, number } = splitPhone(existingFull);
+  return `
+    <div class="phone-field">
+      <select id="${prefix}-cc">
+        ${COUNTRY_CODES.map(c => `<option value="${c.code}" data-digits="${c.digits}" ${c.code===code?"selected":""}>${c.name} (${c.code})</option>`).join("")}
+      </select>
+      <input type="tel" id="${prefix}-num" value="${escapeAttr(number)}" placeholder="Phone number" inputmode="numeric" maxlength="15">
+    </div>
+    <div class="field-error" id="${prefix}-err"></div>
+  `;
+}
+function validatePhoneField(prefix, required) {
+  const cc = document.getElementById(`${prefix}-cc`);
+  const num = document.getElementById(`${prefix}-num`);
+  const err = document.getElementById(`${prefix}-err`);
+  const digits = num.value.replace(/\D/g, "");
+  const expected = COUNTRY_CODES.find(c => c.code === cc.value)?.digits;
+  if (!digits) {
+    if (required) { err.textContent = "Phone number is required."; return null; }
+    err.textContent = ""; return "";
+  }
+  if (digits.length !== expected) {
+    err.textContent = `${cc.options[cc.selectedIndex].text} numbers must be exactly ${expected} digits.`;
+    return null;
+  }
+  err.textContent = "";
+  return `${cc.value} ${digits}`;
+}
+function validateEmailField(id, required) {
+  const el = document.getElementById(id);
+  const errEl = document.getElementById(id + "-err");
+  const val = el.value.trim();
+  if (!val) {
+    if (errEl) errEl.textContent = required ? "Email is required." : "";
+    return required ? null : "";
+  }
+  const ok = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+  if (!ok) { if (errEl) errEl.textContent = "Enter a valid email address."; return null; }
+  if (errEl) errEl.textContent = "";
+  return val;
+}
+function renderPlanPickerHTML(pickerId, category, selectedKey) {
+  const plans = plansForCategory(category);
+  return `<div class="plan-picker" id="${pickerId}">
+    ${plans.map(p => `<button type="button" class="plan-pill ${p.key===selectedKey?"selected":""}" data-plan="${p.key}">${p.label}</button>`).join("")}
+  </div>`;
+}
+function wirePlanPicker(pickerId) {
+  const container = document.getElementById(pickerId);
+  if (!container) return;
+  container.querySelectorAll(".plan-pill").forEach(btn => {
+    btn.addEventListener("click", () => {
+      container.querySelectorAll(".plan-pill").forEach(b => b.classList.remove("selected"));
+      btn.classList.add("selected");
+    });
+  });
+}
+function getSelectedPlan(pickerId, fallback) {
+  const container = document.getElementById(pickerId);
+  const sel = container?.querySelector(".plan-pill.selected");
+  return sel?.dataset.plan || fallback;
+}
+function roleFieldPlaceholder(category) {
+  return category === "academy" ? "e.g. Management, Head Coach, Owner" : "e.g. Father, Mother, Guardian";
+}
 const SUPER_ADMIN_USERNAMES = ["suresh", "sesha"];
 
 let appUsers = [];
@@ -472,13 +586,20 @@ function openLeadModal(id) {
       };
       if (!payload.name) { alert("Name is required."); return; }
       try {
+        let leadId;
         if (lead) {
           await safeUpdate("salesLeads", lead.id, payload);
+          leadId = lead.id;
         } else {
           payload.createdAt = serverTimestamp();
-          await safeAdd("salesLeads", payload);
+          const ref = await safeAdd("salesLeads", payload);
+          leadId = ref.id;
         }
-        closeModal();
+        if (payload.stage === "enrolled") {
+          openEnrollPlanModal(leadId, payload);
+        } else {
+          closeModal();
+        }
       } catch (err) { /* toasted already */ }
     });
     if (lead) {
@@ -490,6 +611,46 @@ function openLeadModal(id) {
       });
     }
   }
+}
+
+// Step 2 of enrollment: choose the client's subscription plan, which either
+// creates their Clients record (rmContacts) or updates the one already linked
+// to this lead. This is what makes an "enrolled" sales contact show up in Clients.
+function openEnrollPlanModal(leadId, payload) {
+  const lead = salesLeads.find(l => l.id === leadId);
+  const category = payload.category;
+  const existingContactId = lead?.linkedContactId;
+  const existingContact = existingContactId ? rmContacts.find(c => c.id === existingContactId) : null;
+  showModal(`
+    <h3>Enrolled! Set up their client plan</h3>
+    <div class="access-note">${escapeHtml(payload.name)} will be added to Clients under ${CATEGORIES.find(c=>c.key===category)?.label || category}.</div>
+    <div class="form-grid">
+      <div class="field full"><label>Plan</label>${renderPlanPickerHTML("enroll-plan-picker", category, existingContact?.plan || plansForCategory(category)[0]?.key)}</div>
+      <div class="field full"><label>Cost (optional)</label><input id="enroll-cost" value="${escapeAttr(existingContact?.cost||"")}" placeholder="e.g. ₹2,000/month"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="m-skip">Skip for now</button>
+      <button class="btn btn-primary" id="m-save">Save &amp; Add to Clients</button>
+    </div>
+  `);
+  wirePlanPicker("enroll-plan-picker");
+  document.getElementById("m-skip").addEventListener("click", closeModal);
+  document.getElementById("m-save").addEventListener("click", async () => {
+    try {
+      const plan = getSelectedPlan("enroll-plan-picker", plansForCategory(category)[0]?.key);
+      const cost = document.getElementById("enroll-cost").value.trim();
+      if (existingContactId && existingContact) {
+        await safeUpdate("rmContacts", existingContactId, { plan, cost });
+      } else {
+        const ref = await safeAdd("rmContacts", {
+          name: payload.name, category, contact: payload.contact || "", plan, cost,
+          createdAt: serverTimestamp()
+        });
+        await safeUpdate("salesLeads", leadId, { linkedContactId: ref.id });
+      }
+      closeModal();
+    } catch (err) { /* toasted already */ }
+  });
 }
 
 // ---------------------------------------------------------------
@@ -533,7 +694,7 @@ function renderRM() {
             ${canEditPriority() ? `<button class="star-btn ${r.priority?"on":""}" data-reg="${r.id}" data-action="star">★</button>` : (r.priority ? `<span style="color:var(--gold);">★</span>` : "")}
             <span class="rname">${escapeHtml(r.contact.name)}</span>
             <span class="rmeta">${escapeHtml(r.contact.contact||"")}</span>
-            <span class="badge ${r.contact.plan==="paid"?"paid":r.contact.plan==="demo"?"demo":"free"}">${PLANS.find(p=>p.key===r.contact.plan)?.label || "Free Tier"}</span>
+            <span class="badge ${planTierClass(r.contact.plan)}">${planLabel(r.contact.plan)}</span>
             ${canEditPriority() ? `
               <button class="arrow-btn" data-reg="${r.id}" data-action="up">↑</button>
               <button class="arrow-btn" data-reg="${r.id}" data-action="down">↓</button>
@@ -626,17 +787,24 @@ function openRegisterModal() {
     <div id="mode-existing">
       <div class="field">
         <label>Choose contact</label>
-        <select id="reg-contact">${pool.length ? pool.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("") : `<option value="">No available contacts — switch to "Add new contact"</option>`}</select>
+        <button type="button" class="btn btn-ghost picker-btn" id="contact-picker-btn">
+          <span id="contact-picker-label">${pool.length ? "Tap to search & select…" : "No available contacts — switch to \"Add new contact\""}</span><span>▾</span>
+        </button>
+        <input type="hidden" id="reg-contact-id" value="">
+        <div class="picker-panel hidden" id="contact-picker-panel">
+          <input type="text" id="contact-search" placeholder="Search by name or phone…">
+          <div class="picker-results" id="contact-search-results"></div>
+        </div>
       </div>
     </div>
 
     <div id="mode-new" class="hidden">
       <div class="form-grid">
         <div class="field full"><label>Name</label><input id="new-c-name" placeholder="Full name"></div>
-        <div class="field full"><label>Contact info</label><input id="new-c-contact" placeholder="Phone / email"></div>
-        <div class="field full"><label>Plan</label>
-          <select id="new-c-plan">${PLANS.map(p=>`<option value="${p.key}">${p.label}</option>`).join("")}</select>
-        </div>
+        <div class="field full"><label>Phone</label>${renderPhoneFieldHTML("new-c-phone", "")}</div>
+        <div class="field full"><label>Email (optional)</label><input id="new-c-email" placeholder="name@example.com"><div class="field-error" id="new-c-email-err"></div></div>
+        <div class="field full"><label>Role</label><input id="new-c-role" placeholder="${roleFieldPlaceholder(currentRmTab)}"></div>
+        <div class="field full"><label>Plan</label>${renderPlanPickerHTML("new-c-plan-picker", currentRmTab, plansForCategory(currentRmTab)[0]?.key)}</div>
         <div class="field full"><label>Cost (optional)</label><input id="new-c-cost" placeholder="e.g. ₹2,000/month"></div>
       </div>
     </div>
@@ -647,6 +815,40 @@ function openRegisterModal() {
     </div>
   `);
   document.getElementById("m-cancel").addEventListener("click", closeModal);
+  wirePlanPicker("new-c-plan-picker");
+
+  // Contact search picker
+  const pickerBtn = document.getElementById("contact-picker-btn");
+  const pickerPanel = document.getElementById("contact-picker-panel");
+  const searchInput = document.getElementById("contact-search");
+  const resultsBox = document.getElementById("contact-search-results");
+  function renderPickerResults(term) {
+    const t = term.trim().toLowerCase();
+    const matches = pool.filter(c => !t || c.name.toLowerCase().includes(t) || (c.contact||"").toLowerCase().includes(t));
+    resultsBox.innerHTML = matches.map(c => `
+      <div class="picker-row" data-id="${c.id}">
+        <div><div class="prname">${escapeHtml(c.name)}</div><div class="prmeta">${escapeHtml(c.contact||"no contact info")}</div></div>
+        <span class="badge ${planTierClass(c.plan)}">${planLabel(c.plan)}</span>
+      </div>
+    `).join("") || `<div class="empty-state">No matches</div>`;
+    resultsBox.querySelectorAll(".picker-row").forEach(row => {
+      row.addEventListener("click", () => {
+        const c = pool.find(x => x.id === row.dataset.id);
+        document.getElementById("reg-contact-id").value = c.id;
+        document.getElementById("contact-picker-label").textContent = c.name;
+        pickerPanel.classList.add("hidden");
+      });
+    });
+  }
+  if (pool.length) {
+    pickerBtn.addEventListener("click", () => {
+      pickerPanel.classList.toggle("hidden");
+      if (!pickerPanel.classList.contains("hidden")) { renderPickerResults(""); searchInput.focus(); }
+    });
+    searchInput.addEventListener("input", () => renderPickerResults(searchInput.value));
+  } else {
+    pickerBtn.disabled = true;
+  }
 
   let mode = "existing";
   document.querySelectorAll(".mode-toggle button").forEach(b => {
@@ -664,16 +866,20 @@ function openRegisterModal() {
       if (mode === "new") {
         const newName = document.getElementById("new-c-name").value.trim();
         if (!newName) { alert("Enter a name for the new contact."); return; }
+        const phone = validatePhoneField("new-c-phone", false);
+        const email = validateEmailField("new-c-email", false);
+        if (phone === null || email === null) return; // validation error already shown inline
         const ref = await safeAdd("rmContacts", {
           name: newName, category: currentRmTab,
-          contact: document.getElementById("new-c-contact").value.trim(),
-          plan: document.getElementById("new-c-plan").value,
+          contact: phone, email,
+          role: document.getElementById("new-c-role").value.trim(),
+          plan: getSelectedPlan("new-c-plan-picker", plansForCategory(currentRmTab)[0]?.key),
           cost: document.getElementById("new-c-cost").value.trim(),
           createdAt: serverTimestamp()
         });
         contactId = ref.id;
       } else {
-        contactId = document.getElementById("reg-contact").value;
+        contactId = document.getElementById("reg-contact-id").value;
         if (!contactId) { alert("Choose a contact, or switch to \"Add new contact\"."); return; }
       }
       await safeAdd("registrations", {
@@ -692,12 +898,10 @@ function openEditContactModal(contactId) {
     <h3>Edit Contact</h3>
     <div class="form-grid">
       <div class="field full"><label>Name</label><input id="ec-name" value="${escapeAttr(contact.name)}"></div>
-      <div class="field full"><label>Contact info</label><input id="ec-contact" value="${escapeAttr(contact.contact||"")}"></div>
-      <div class="field full"><label>Plan</label>
-        <select id="ec-plan">
-          ${PLANS.map(p => `<option value="${p.key}" ${(contact.plan||"free")===p.key?"selected":""}>${p.label}</option>`).join("")}
-        </select>
-      </div>
+      <div class="field full"><label>Phone</label>${renderPhoneFieldHTML("ec-phone", contact.contact)}</div>
+      <div class="field full"><label>Email (optional)</label><input id="ec-email" value="${escapeAttr(contact.email||"")}" placeholder="name@example.com"><div class="field-error" id="ec-email-err"></div></div>
+      <div class="field full"><label>Role</label><input id="ec-role" value="${escapeAttr(contact.role||"")}" placeholder="${roleFieldPlaceholder(contact.category)}"></div>
+      <div class="field full"><label>Plan</label>${renderPlanPickerHTML("ec-plan-picker", contact.category, contact.plan || plansForCategory(contact.category)[0]?.key)}</div>
       <div class="field full"><label>Cost (optional)</label><input id="ec-cost" value="${escapeAttr(contact.cost||"")}" placeholder="e.g. ₹2,000/month"></div>
     </div>
     <div class="modal-actions">
@@ -706,13 +910,18 @@ function openEditContactModal(contactId) {
     </div>
   `);
   document.getElementById("m-cancel").addEventListener("click", closeModal);
+  wirePlanPicker("ec-plan-picker");
   document.getElementById("m-save").addEventListener("click", async () => {
     const name = document.getElementById("ec-name").value.trim();
     if (!name) { alert("Name is required."); return; }
+    const phone = validatePhoneField("ec-phone", false);
+    const email = validateEmailField("ec-email", false);
+    if (phone === null || email === null) return;
     try {
       await safeUpdate("rmContacts", contactId, {
-        name, contact: document.getElementById("ec-contact").value.trim(),
-        plan: document.getElementById("ec-plan").value,
+        name, contact: phone, email,
+        role: document.getElementById("ec-role").value.trim(),
+        plan: getSelectedPlan("ec-plan-picker", contact.plan),
         cost: document.getElementById("ec-cost").value.trim()
       });
       closeModal();
@@ -732,9 +941,15 @@ let currentClientsPlanFilter = "all";
 function renderClients() {
   let list = rmContacts.slice();
   if (currentClientsCatFilter !== "all") list = list.filter(c => c.category === currentClientsCatFilter);
-  if (currentClientsPlanFilter !== "all") list = list.filter(c => (c.plan || "free") === currentClientsPlanFilter);
+  if (currentClientsPlanFilter !== "all") list = list.filter(c => (c.plan || "") === currentClientsPlanFilter);
 
-  const countFor = (cat, plan) => rmContacts.filter(c => (cat==="all"||c.category===cat) && (plan==="all"||(c.plan||"free")===plan)).length;
+  // Which plan filter buttons to show depends on which category is selected —
+  // parent/athlete and academy use entirely different plan tiers.
+  const planOptions = currentClientsCatFilter === "all"
+    ? allPlanDefs()
+    : plansForCategory(currentClientsCatFilter);
+
+  const countFor = (cat) => rmContacts.filter(c => cat==="all"||c.category===cat).length;
 
   root.innerHTML = `
     <div class="view">
@@ -744,7 +959,9 @@ function renderClients() {
       <div class="court-rule"></div>
 
       <div class="stat-grid">
-        ${PLANS.map(p => `<div class="stat-card countup"><div class="stat-label">${p.label}</div><div class="stat-value">${countFor("all", p.key)}</div></div>`).join("")}
+        <div class="stat-card countup"><div class="stat-label">Parents</div><div class="stat-value">${countFor("parent")}</div></div>
+        <div class="stat-card countup"><div class="stat-label">Athletes</div><div class="stat-value">${countFor("athlete")}</div></div>
+        <div class="stat-card countup"><div class="stat-label">Academies</div><div class="stat-value">${countFor("academy")}</div></div>
       </div>
 
       <div class="tabbar">
@@ -753,7 +970,7 @@ function renderClients() {
       </div>
       <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
         <button class="btn btn-sm ${currentClientsPlanFilter==="all"?"btn-primary":"btn-ghost"}" data-planfilter="all">All plans</button>
-        ${PLANS.map(p => `<button class="btn btn-sm ${currentClientsPlanFilter===p.key?"btn-primary":"btn-ghost"}" data-planfilter="${p.key}">${p.label}</button>`).join("")}
+        ${planOptions.map(p => `<button class="btn btn-sm ${currentClientsPlanFilter===p.key?"btn-primary":"btn-ghost"}" data-planfilter="${p.key}">${p.label}</button>`).join("")}
       </div>
 
       <div class="rm-list">
@@ -762,8 +979,9 @@ function renderClients() {
             <span class="rname">${escapeHtml(c.name)}</span>
             <span class="rmeta">${CATEGORIES.find(x=>x.key===c.category)?.label || c.category}</span>
             <span class="rmeta">${escapeHtml(c.contact||"")}</span>
+            ${c.role ? `<span class="rmeta">${escapeHtml(c.role)}</span>` : ""}
             ${c.cost ? `<span class="rmeta">${escapeHtml(c.cost)}</span>` : ""}
-            <span class="badge ${c.plan==="paid"?"paid":c.plan==="demo"?"demo":"free"}">${PLANS.find(p=>p.key===(c.plan||"free"))?.label}</span>
+            <span class="badge ${planTierClass(c.plan)}">${planLabel(c.plan)}</span>
             ${canEditRM() ? `<button class="btn btn-ghost btn-sm" data-contact="${c.id}" data-action="edit-client">Edit</button>` : ""}
           </div>
         `).join("") || `<div class="empty-state">No clients match this filter yet</div>`}
@@ -771,7 +989,7 @@ function renderClients() {
     </div>
   `;
 
-  root.querySelectorAll("[data-catfilter]").forEach(b => b.addEventListener("click", () => { currentClientsCatFilter = b.dataset.catfilter; renderClients(); }));
+  root.querySelectorAll("[data-catfilter]").forEach(b => b.addEventListener("click", () => { currentClientsCatFilter = b.dataset.catfilter; currentClientsPlanFilter = "all"; renderClients(); }));
   root.querySelectorAll("[data-planfilter]").forEach(b => b.addEventListener("click", () => { currentClientsPlanFilter = b.dataset.planfilter; renderClients(); }));
   root.querySelectorAll("[data-action='edit-client']").forEach(b => b.addEventListener("click", () => openEditContactModal(b.dataset.contact)));
 }
@@ -780,8 +998,9 @@ function renderClients() {
 // VIDEO PIPELINE PROGRESS TRACKER (enrolled athletes, per tournament)
 // ---------------------------------------------------------------
 function renderProgress() {
-  const athleteRegs = registrations
-    .filter(r => r.category === "athlete")
+  // Broadened to every registered category (not just athletes) — any
+  // registrant's video pipeline can be tracked here.
+  const allRegs = registrations
     .map(r => ({ ...r, contact: rmContacts.find(c => c.id === r.contactId), tourney: tournaments.find(t => t.id === r.tournamentId) }))
     .filter(r => r.contact && r.tourney);
 
@@ -792,12 +1011,28 @@ function renderProgress() {
       </div>
       <div class="court-rule"></div>
       ${!canEditProgress() ? `<div class="access-note">View-only access.</div>` : ""}
-      ${athleteRegs.map(r => {
+      ${allRegs.map(r => {
         const p = progressDocs.find(p => p.contactId === r.contactId && p.tournamentId === r.tournamentId) || {};
+        const sources = p.videoSources || [];
         return `
-        <div class="progress-row" data-contact="${r.contactId}" data-tourney="${r.tournamentId}">
-          <div class="pname">${escapeHtml(r.contact.name)}</div>
-          <div class="ptourney">${escapeHtml(r.tourney.name)}</div>
+        <div class="progress-card" data-contact="${r.contactId}" data-tourney="${r.tournamentId}">
+          <div class="progress-head">
+            <span class="pname">${escapeHtml(r.contact.name)}</span>
+            <span class="ptourney">${escapeHtml(r.tourney.name)}</span>
+            <span class="badge tier-mid">${CATEGORIES.find(c=>c.key===r.category)?.label || r.category}</span>
+          </div>
+          <div class="video-sources">
+            <label>Video Sources</label>
+            <div class="source-chips">
+              ${sources.map(s => `<span class="source-chip">${escapeHtml(s)}${canEditProgress()?`<button data-remove-source="${escapeAttr(s)}">×</button>`:""}</span>`).join("") || `<span style="font-size:12px; color:var(--chalk-faint);">None added yet</span>`}
+            </div>
+            ${canEditProgress() ? `
+              <div class="source-add">
+                <input type="text" class="source-input" placeholder="e.g. mour_vs_aj_set1_far.mp4">
+                <button class="btn btn-ghost btn-sm add-source-btn">+ Add</button>
+              </div>
+            ` : ""}
+          </div>
           <div class="steps">
             ${STEP_KEYS.map(s => `
               <div class="step-unit">
@@ -813,38 +1048,64 @@ function renderProgress() {
             `).join("")}
           </div>
         </div>`;
-      }).join("") || `<div class="empty-state">No athletes registered for tournaments yet</div>`}
+      }).join("") || `<div class="empty-state">No one registered for tournaments yet</div>`}
     </div>
   `;
+
+  async function upsertProgress(contactId, tournamentId, fields) {
+    let existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
+    if (existing) {
+      await safeUpdate("progress", existing.id, { ...fields, updatedAt: serverTimestamp() });
+    } else {
+      await safeAdd("progress", { contactId, tournamentId, ...fields, updatedAt: serverTimestamp() });
+    }
+  }
 
   if (canEditProgress()) {
     root.querySelectorAll(".status-dot").forEach(dot => {
       dot.addEventListener("click", async () => {
         try {
-          const rowEl = dot.closest(".progress-row");
+          const rowEl = dot.closest(".progress-card");
           const contactId = rowEl.dataset.contact, tournamentId = rowEl.dataset.tourney;
           const stepKey = dot.dataset.step;
-          let existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
+          const existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
           const newVal = !(existing && existing[stepKey]);
-          if (existing) {
-            await safeUpdate("progress", existing.id, { [stepKey]: newVal, updatedAt: serverTimestamp() });
-          } else {
-            await safeAdd("progress", { contactId, tournamentId, [stepKey]: newVal, updatedAt: serverTimestamp() });
-          }
+          await upsertProgress(contactId, tournamentId, { [stepKey]: newVal });
         } catch (err) { /* toasted already */ }
       });
     });
     root.querySelectorAll(".annotator-select").forEach(sel => {
       sel.addEventListener("change", async () => {
         try {
-          const rowEl = sel.closest(".progress-row");
-          const contactId = rowEl.dataset.contact, tournamentId = rowEl.dataset.tourney;
-          let existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
+          const rowEl = sel.closest(".progress-card");
+          await upsertProgress(rowEl.dataset.contact, rowEl.dataset.tourney, { annotator: sel.value });
+        } catch (err) { /* toasted already */ }
+      });
+    });
+    root.querySelectorAll(".add-source-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const card = btn.closest(".progress-card");
+        const input = card.querySelector(".source-input");
+        const val = input.value.trim();
+        if (!val) return;
+        try {
+          const contactId = card.dataset.contact, tournamentId = card.dataset.tourney;
+          const existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
           if (existing) {
-            await safeUpdate("progress", existing.id, { annotator: sel.value, updatedAt: serverTimestamp() });
+            await safeUpdate("progress", existing.id, { videoSources: arrayUnion(val), updatedAt: serverTimestamp() });
           } else {
-            await safeAdd("progress", { contactId, tournamentId, annotator: sel.value, updatedAt: serverTimestamp() });
+            await safeAdd("progress", { contactId, tournamentId, videoSources: [val], updatedAt: serverTimestamp() });
           }
+        } catch (err) { /* toasted already */ }
+      });
+    });
+    root.querySelectorAll("[data-remove-source]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const card = btn.closest(".progress-card");
+        try {
+          const contactId = card.dataset.contact, tournamentId = card.dataset.tourney;
+          const existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
+          if (existing) await safeUpdate("progress", existing.id, { videoSources: arrayRemove(btn.dataset.removeSource), updatedAt: serverTimestamp() });
         } catch (err) { /* toasted already */ }
       });
     });
