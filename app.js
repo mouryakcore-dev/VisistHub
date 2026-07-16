@@ -11,6 +11,14 @@ import {
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// Register the service worker — needed both for offline app-shell caching and
+// for Chrome/Edge to consider this installable as a desktop/mobile app.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(err => console.warn("Service worker registration failed:", err));
+  });
+}
+
 // ---------------------------------------------------------------
 // LOGIN BACKGROUND VIDEO — handle autoplay quirks across iOS/Android/
 // desktop. The CSS gradient behind it always animates regardless, so

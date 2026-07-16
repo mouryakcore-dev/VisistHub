@@ -1,6 +1,6 @@
 // Bump this version string EVERY time app.html, app.js, or this file changes,
 // so phones/browsers pick up the new version instead of serving a stale cache.
-const CACHE_VERSION = "visist-crm-v1";
+const CACHE_VERSION = "visist-crm-v2";
 const CORE_ASSETS = [
   "./app.html",
   "./app.js",
