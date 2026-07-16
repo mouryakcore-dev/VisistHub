@@ -155,7 +155,7 @@ function getSelectedPlan(pickerId, fallback) {
 function roleFieldPlaceholder(category) {
   return category === "academy" ? "e.g. Management, Head Coach, Owner" : "e.g. Father, Mother, Guardian";
 }
-const SUPER_ADMIN_USERNAMES = ["suresh", "sesha"];
+const SUPER_ADMIN_USERNAMES = ["suresh", "sesha", "mourya"];
 
 let appUsers = [];
 
@@ -396,7 +396,12 @@ function render() {
 // ---------------------------------------------------------------
 function renderDashboard() {
   const countByCat = (list, cat) => list.filter(x => x.category === cat).length;
-  const enrolledByCat = cat => salesLeads.filter(x => x.category === cat && x.stage === "enrolled").length;
+  // "Onboarded" now reflects the Clients list directly — this includes both
+  // people enrolled through the Sales pipeline AND anyone added straight into
+  // Clients (e.g. via tournament registration), which is the real source of
+  // truth for "who is currently on board." Exhausted-plan clients aren't
+  // counted as currently onboarded.
+  const enrolledByCat = cat => rmContacts.filter(x => x.category === cat && x.planStatus !== "exhausted").length;
 
   const totalLeads = salesLeads.length;
   const enrolled = salesLeads.filter(l => l.stage === "enrolled").length;
@@ -415,9 +420,9 @@ function renderDashboard() {
       <div class="court-rule"></div>
 
       <div class="stat-grid">
-        <div class="stat-card countup"><div class="stat-label">Parents Onboarded</div><div class="stat-value">${enrolledByCat("parent")}</div><div class="stat-sub">enrolled to date</div></div>
-        <div class="stat-card countup"><div class="stat-label">Athletes Onboarded</div><div class="stat-value">${enrolledByCat("athlete")}</div><div class="stat-sub">enrolled to date</div></div>
-        <div class="stat-card countup"><div class="stat-label">Academies Onboarded</div><div class="stat-value">${enrolledByCat("academy")}</div><div class="stat-sub">enrolled to date</div></div>
+        <div class="stat-card countup"><div class="stat-label">Parents Onboarded</div><div class="stat-value">${enrolledByCat("parent")}</div><div class="stat-sub">active clients</div></div>
+        <div class="stat-card countup"><div class="stat-label">Athletes Onboarded</div><div class="stat-value">${enrolledByCat("athlete")}</div><div class="stat-sub">active clients</div></div>
+        <div class="stat-card countup"><div class="stat-label">Academies Onboarded</div><div class="stat-value">${enrolledByCat("academy")}</div><div class="stat-sub">active clients</div></div>
       </div>
 
       <div class="panel">
@@ -568,7 +573,8 @@ function openLeadModal(id) {
       <div class="field"><label>Stage</label>
         <select id="m-stage" ${editable?"":"disabled"}>${STAGES.map(s=>`<option value="${s}" ${lead?.stage===s||(!lead&&s==="pending")?"selected":""}>${s}</option>`).join("")}</select>
       </div>
-      <div class="field full"><label>Contact (phone/email)</label><input id="m-contact" value="${lead?escapeAttr(lead.contact||""):""}" ${editable?"":"disabled"}></div>
+      <div class="field full"><label>Phone</label>${renderPhoneFieldHTML("m-phone", lead?.contact)}</div>
+      <div class="field full"><label>Email (optional)</label><input id="m-email" value="${lead?escapeAttr(lead.email||""):""}" placeholder="name@example.com" ${editable?"":"disabled"}><div class="field-error" id="m-email-err"></div></div>
       <div class="field full"><label>Source</label><input id="m-source" value="${lead?escapeAttr(lead.source||""):""}" placeholder="Referral, inbound, cold, etc." ${editable?"":"disabled"}></div>
       <div class="field full"><label>Assigned To</label><input id="m-assigned" value="${lead?escapeAttr(lead.assignedTo||""):""}" ${editable?"":"disabled"}></div>
       <div class="field full"><label>Notes</label><textarea id="m-notes" ${editable?"":"disabled"}>${lead?escapeHtml(lead.notes||""):""}</textarea></div>
@@ -582,17 +588,21 @@ function openLeadModal(id) {
   document.getElementById("m-cancel").addEventListener("click", closeModal);
   if (editable) {
     document.getElementById("m-save").addEventListener("click", async () => {
+      const name = document.getElementById("m-name").value.trim();
+      if (!name) { alert("Name is required."); return; }
+      const phone = validatePhoneField("m-phone", false);
+      const email = validateEmailField("m-email", false);
+      if (phone === null || email === null) return;
       const payload = {
-        name: document.getElementById("m-name").value.trim(),
+        name,
         category: document.getElementById("m-category").value,
         stage: document.getElementById("m-stage").value,
-        contact: document.getElementById("m-contact").value.trim(),
+        contact: phone, email,
         source: document.getElementById("m-source").value.trim(),
         assignedTo: document.getElementById("m-assigned").value.trim(),
         notes: document.getElementById("m-notes").value.trim(),
         updatedAt: serverTimestamp()
       };
-      if (!payload.name) { alert("Name is required."); return; }
       try {
         let leadId;
         if (lead) {
@@ -648,10 +658,10 @@ function openEnrollPlanModal(leadId, payload) {
       const plan = getSelectedPlan("enroll-plan-picker", plansForCategory(category)[0]?.key);
       const cost = document.getElementById("enroll-cost").value.trim();
       if (existingContactId && existingContact) {
-        await safeUpdate("rmContacts", existingContactId, { plan, cost });
+        await safeUpdate("rmContacts", existingContactId, { plan, cost, category, name: payload.name, contact: payload.contact || existingContact.contact || "", email: payload.email || existingContact.email || "" });
       } else {
         const ref = await safeAdd("rmContacts", {
-          name: payload.name, category, contact: payload.contact || "", plan, cost,
+          name: payload.name, category, contact: payload.contact || "", email: payload.email || "", plan, cost,
           createdAt: serverTimestamp()
         });
         await safeUpdate("salesLeads", leadId, { linkedContactId: ref.id });
@@ -906,10 +916,13 @@ function openEditContactModal(contactId) {
     <h3>Edit Contact</h3>
     <div class="form-grid">
       <div class="field full"><label>Name</label><input id="ec-name" value="${escapeAttr(contact.name)}"></div>
+      <div class="field full"><label>Category</label>
+        <select id="ec-category">${CATEGORIES.map(c=>`<option value="${c.key}" ${contact.category===c.key?"selected":""}>${c.label}</option>`).join("")}</select>
+      </div>
       <div class="field full"><label>Phone</label>${renderPhoneFieldHTML("ec-phone", contact.contact)}</div>
       <div class="field full"><label>Email (optional)</label><input id="ec-email" value="${escapeAttr(contact.email||"")}" placeholder="name@example.com"><div class="field-error" id="ec-email-err"></div></div>
       <div class="field full"><label>Role</label><input id="ec-role" value="${escapeAttr(contact.role||"")}" placeholder="${roleFieldPlaceholder(contact.category)}"></div>
-      <div class="field full"><label>Plan</label>${renderPlanPickerHTML("ec-plan-picker", contact.category, contact.plan || plansForCategory(contact.category)[0]?.key)}</div>
+      <div class="field full" id="ec-plan-field"><label>Plan</label>${renderPlanPickerHTML("ec-plan-picker", contact.category, contact.plan || plansForCategory(contact.category)[0]?.key)}</div>
       <div class="field full"><label>Cost (optional)</label><input id="ec-cost" value="${escapeAttr(contact.cost||"")}" placeholder="e.g. ₹2,000/month"></div>
     </div>
     <div class="modal-actions">
@@ -919,15 +932,21 @@ function openEditContactModal(contactId) {
   `);
   document.getElementById("m-cancel").addEventListener("click", closeModal);
   wirePlanPicker("ec-plan-picker");
+  document.getElementById("ec-category").addEventListener("change", (e) => {
+    // Plan tiers differ by category (parent/athlete vs academy), so refresh the picker.
+    document.getElementById("ec-plan-field").innerHTML = `<label>Plan</label>${renderPlanPickerHTML("ec-plan-picker", e.target.value, plansForCategory(e.target.value)[0]?.key)}`;
+    wirePlanPicker("ec-plan-picker");
+  });
   document.getElementById("m-save").addEventListener("click", async () => {
     const name = document.getElementById("ec-name").value.trim();
     if (!name) { alert("Name is required."); return; }
+    const category = document.getElementById("ec-category").value;
     const phone = validatePhoneField("ec-phone", false);
     const email = validateEmailField("ec-email", false);
     if (phone === null || email === null) return;
     try {
       await safeUpdate("rmContacts", contactId, {
-        name, contact: phone, email,
+        name, category, contact: phone, email,
         role: document.getElementById("ec-role").value.trim(),
         plan: getSelectedPlan("ec-plan-picker", contact.plan),
         cost: document.getElementById("ec-cost").value.trim()
@@ -945,9 +964,10 @@ function openEditContactModal(contactId) {
 // ---------------------------------------------------------------
 let currentClientsCatFilter = "all";
 let currentClientsPlanFilter = "all";
+let currentClientsStatusFilter = "active"; // "active" | "exhausted"
 
 function renderClients() {
-  let list = rmContacts.slice();
+  let list = rmContacts.filter(c => currentClientsStatusFilter === "exhausted" ? c.planStatus === "exhausted" : c.planStatus !== "exhausted");
   if (currentClientsCatFilter !== "all") list = list.filter(c => c.category === currentClientsCatFilter);
   if (currentClientsPlanFilter !== "all") list = list.filter(c => (c.plan || "") === currentClientsPlanFilter);
 
@@ -957,7 +977,9 @@ function renderClients() {
     ? allPlanDefs()
     : plansForCategory(currentClientsCatFilter);
 
-  const countFor = (cat) => rmContacts.filter(c => cat==="all"||c.category===cat).length;
+  const activeOnly = c => c.planStatus !== "exhausted";
+  const countFor = (cat) => rmContacts.filter(c => (cat==="all"||c.category===cat) && activeOnly(c)).length;
+  const exhaustedCount = rmContacts.filter(c => c.planStatus === "exhausted").length;
 
   root.innerHTML = `
     <div class="view">
@@ -970,6 +992,12 @@ function renderClients() {
         <div class="stat-card countup"><div class="stat-label">Parents</div><div class="stat-value">${countFor("parent")}</div></div>
         <div class="stat-card countup"><div class="stat-label">Athletes</div><div class="stat-value">${countFor("athlete")}</div></div>
         <div class="stat-card countup"><div class="stat-label">Academies</div><div class="stat-value">${countFor("academy")}</div></div>
+        <div class="stat-card bad countup"><div class="stat-label">Exhausted Plans</div><div class="stat-value">${exhaustedCount}</div></div>
+      </div>
+
+      <div class="mode-toggle" style="max-width:340px;">
+        <button type="button" class="${currentClientsStatusFilter==="active"?"active":""}" data-statusfilter="active">Active clients</button>
+        <button type="button" class="${currentClientsStatusFilter==="exhausted"?"active":""}" data-statusfilter="exhausted">Exhausted plans (${exhaustedCount})</button>
       </div>
 
       <div class="tabbar">
@@ -991,15 +1019,32 @@ function renderClients() {
             ${c.cost ? `<span class="rmeta">${escapeHtml(c.cost)}</span>` : ""}
             <span class="badge ${planTierClass(c.plan)}">${planLabel(c.plan)}</span>
             ${canEditRM() ? `<button class="btn btn-ghost btn-sm" data-contact="${c.id}" data-action="edit-client">Edit</button>` : ""}
+            ${canEditRM() ? (currentClientsStatusFilter === "active"
+                ? `<button class="btn btn-ghost btn-sm" data-contact="${c.id}" data-action="mark-exhausted">Mark exhausted</button>`
+                : `<button class="btn btn-ghost btn-sm" data-contact="${c.id}" data-action="reactivate">Reactivate</button>`) : ""}
+            ${canEditRM() ? `<button class="btn btn-ghost btn-sm" data-contact="${c.id}" data-action="delete-client">Delete</button>` : ""}
           </div>
         `).join("") || `<div class="empty-state">No clients match this filter yet</div>`}
       </div>
     </div>
   `;
 
+  root.querySelectorAll("[data-statusfilter]").forEach(b => b.addEventListener("click", () => { currentClientsStatusFilter = b.dataset.statusfilter; renderClients(); }));
   root.querySelectorAll("[data-catfilter]").forEach(b => b.addEventListener("click", () => { currentClientsCatFilter = b.dataset.catfilter; currentClientsPlanFilter = "all"; renderClients(); }));
   root.querySelectorAll("[data-planfilter]").forEach(b => b.addEventListener("click", () => { currentClientsPlanFilter = b.dataset.planfilter; renderClients(); }));
   root.querySelectorAll("[data-action='edit-client']").forEach(b => b.addEventListener("click", () => openEditContactModal(b.dataset.contact)));
+  root.querySelectorAll("[data-action='mark-exhausted']").forEach(b => b.addEventListener("click", async () => {
+    try { await safeUpdate("rmContacts", b.dataset.contact, { planStatus: "exhausted" }); } catch (err) {}
+  }));
+  root.querySelectorAll("[data-action='reactivate']").forEach(b => b.addEventListener("click", async () => {
+    try { await safeUpdate("rmContacts", b.dataset.contact, { planStatus: "active" }); } catch (err) {}
+  }));
+  root.querySelectorAll("[data-action='delete-client']").forEach(b => b.addEventListener("click", async () => {
+    const c = rmContacts.find(x => x.id === b.dataset.contact);
+    if (confirm(`Permanently delete ${c?.name || "this client"}? This cannot be undone.`)) {
+      try { await safeDelete("rmContacts", b.dataset.contact); } catch (err) {}
+    }
+  }));
 }
 
 // ---------------------------------------------------------------
@@ -1007,10 +1052,12 @@ function renderClients() {
 // ---------------------------------------------------------------
 function renderProgress() {
   // Broadened to every registered category (not just athletes) — any
-  // registrant's video pipeline can be tracked here.
+  // registrant's video pipeline can be tracked here. Priority-flagged
+  // registrants (starred in Tournaments) are pulled to the top and marked.
   const allRegs = registrations
     .map(r => ({ ...r, contact: rmContacts.find(c => c.id === r.contactId), tourney: tournaments.find(t => t.id === r.tournamentId) }))
-    .filter(r => r.contact && r.tourney);
+    .filter(r => r.contact && r.tourney)
+    .sort((a, b) => (b.priority ? 1 : 0) - (a.priority ? 1 : 0));
 
   root.innerHTML = `
     <div class="view">
@@ -1028,6 +1075,7 @@ function renderProgress() {
             <span class="pname">${escapeHtml(r.contact.name)}</span>
             <span class="ptourney">${escapeHtml(r.tourney.name)}</span>
             <span class="badge tier-mid">${CATEGORIES.find(c=>c.key===r.category)?.label || r.category}</span>
+            ${r.priority ? `<span class="badge tier-high">★ Priority</span>` : ""}
           </div>
           <div class="video-sources">
             <label>Video Sources</label>
@@ -1140,6 +1188,18 @@ function renderBackup() {
         <div><button class="btn btn-primary" id="import-btn">Restore from file</button></div>
         <div id="import-status" style="font-size:13px; color:var(--chalk-dim); margin-top:10px;"></div>
       </div>
+      <div class="panel" style="border-color: var(--coral);">
+        <div class="panel-title" style="color: var(--coral);">Danger Zone — Erase Test Data</div>
+        <p style="color:var(--chalk-dim); font-size:13px; margin-bottom:14px;">
+          For individual test records: go to Contacts or Clients and use each row's own <b>Delete</b> button.<br><br>
+          To wipe <b>everything</b> at once (all sales contacts, clients, tournaments, registrations, and deliverables — a full reset), type <b>DELETE</b> below. This cannot be undone, and there's no way to recover it afterward except restoring an earlier backup file.
+        </p>
+        <div class="form-grid" style="margin-bottom:12px;">
+          <input type="text" id="wipe-confirm-input" class="full" placeholder="Type DELETE to enable" style="grid-column:1/-1; padding:10px 12px; background:var(--surface-2); border:1px solid var(--line); border-radius:8px; color:var(--chalk);">
+        </div>
+        <button class="btn btn-danger" id="wipe-all-btn" disabled>Erase All Data</button>
+        <div id="wipe-status" style="font-size:13px; color:var(--chalk-dim); margin-top:10px;"></div>
+      </div>
     </div>
   `;
   document.getElementById("export-btn").addEventListener("click", () => {
@@ -1183,6 +1243,25 @@ function renderBackup() {
       console.error(err);
     }
   });
+
+  document.getElementById("wipe-confirm-input").addEventListener("input", (e) => {
+    document.getElementById("wipe-all-btn").disabled = e.target.value.trim() !== "DELETE";
+  });
+  document.getElementById("wipe-all-btn").addEventListener("click", async () => {
+    if (!confirm("This will permanently delete every sales contact, client, tournament, registration, and deliverable record. Are you absolutely sure?")) return;
+    const status = document.getElementById("wipe-status");
+    status.textContent = "Erasing…";
+    try {
+      let count = 0;
+      for (const [colName, list] of Object.entries({ salesLeads, rmContacts, tournaments, registrations, progress: progressDocs })) {
+        for (const rec of list) { await safeDelete(colName, rec.id); count++; }
+      }
+      status.textContent = `Done — erased ${count} records.`;
+    } catch (err) {
+      status.textContent = "Something went wrong partway through — check the toast messages above.";
+    }
+  });
+}
 }
 
 // ---------------------------------------------------------------
