@@ -1,11 +1,12 @@
 // Bump this version string EVERY time app.html, app.js, or this file changes,
 // so phones/browsers pick up the new version instead of serving a stale cache.
-const CACHE_VERSION = "visist-crm-v2";
+const CACHE_VERSION = "visist-crm-v4";
 const CORE_ASSETS = [
   "./app.html",
   "./app.js",
   "./firebase-config.js",
-  "./manifest.json"
+  "./manifest.json",
+  "./logo-mark.png"
 ];
 
 self.addEventListener("install", event => {

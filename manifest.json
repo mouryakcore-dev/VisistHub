@@ -5,5 +5,7 @@
   "display": "standalone",
   "background_color": "#071510",
   "theme_color": "#0F241B",
-  "icons": []
+  "icons": [
+    { "src": "logo-mark.png", "sizes": "824x568", "type": "image/png", "purpose": "any" }
+  ]
 }
