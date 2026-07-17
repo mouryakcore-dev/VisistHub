@@ -212,10 +212,13 @@ input, select, textarea{ font-family: var(--body); }
 .funnel-col-head{ padding:13px 15px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
 .funnel-col-head .label{ font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; }
 .funnel-col-head .count{ font-family:var(--mono); font-size:13px; color:var(--chalk-faint); }
-.funnel-col[data-stage="pending"] .label{ color: var(--blue); }
-.funnel-col[data-stage="pitched"] .label{ color: var(--gold); }
-.funnel-col[data-stage="rejected"] .label{ color: var(--coral); }
-.funnel-col[data-stage="enrolled"] .label{ color: var(--green); }
+.funnel-col[data-stage="prospects"] .label{ color: var(--blue); }
+.funnel-col[data-stage="interest"] .label{ color: var(--gold); }
+.funnel-col[data-stage="consideration"] .label{ color: #F5A623; }
+.funnel-col[data-stage="intent"] .label{ color: #A855F7; }
+.funnel-col[data-stage="evaluation"] .label{ color: #FF9F5B; }
+.funnel-col[data-stage="action"] .label{ color: var(--green); }
+.funnel-col[data-stage="retention"] .label{ color: #2E5B3F; }
 .funnel-list{ max-height: 420px; overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:8px; }
 .lead-card{
   background: var(--surface-2); border:1px solid var(--line); border-radius:8px; padding:10px 12px; cursor:pointer;
@@ -242,10 +245,14 @@ input, select, textarea{ font-family: var(--body); }
 .arrow-btn{ background:var(--surface-2); border:1px solid var(--line); color:var(--chalk-dim); width:24px; height:24px; border-radius:6px; font-size:11px; display:flex; align-items:center; justify-content:center; }
 .arrow-btn:hover{ color:var(--chalk); border-color:var(--line-bright); }
 .badge{ font-size:10px; padding:3px 8px; border-radius:20px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; }
-.badge.pending{ background: rgba(91,140,255,0.15); color:var(--blue); }
-.badge.pitched{ background: rgba(245,166,35,0.15); color:var(--gold); }
-.badge.rejected{ background: rgba(255,107,94,0.15); color:var(--coral); }
-.badge.enrolled{ background: rgba(62,207,142,0.15); color:var(--green); }
+.badge.stage-prospects{ background: rgba(91,140,255,0.15); color:var(--blue); }
+.badge.stage-interest{ background: rgba(245,166,35,0.15); color:var(--gold); }
+.badge.stage-consideration{ background: rgba(245,166,35,0.2); color:#F5A623; }
+.badge.stage-intent{ background: rgba(168,85,247,0.15); color:#A855F7; }
+.badge.stage-evaluation{ background: rgba(255,159,91,0.15); color:#FF9F5B; }
+.badge.stage-action{ background: rgba(62,207,142,0.15); color:var(--green); }
+.badge.stage-retention{ background: rgba(46,91,63,0.3); color:#7FBF9A; }
+.badge.lost{ background: rgba(255,107,94,0.15); color:var(--coral); }
 .badge.free{ background: rgba(109,126,156,0.18); color:var(--chalk-dim); }
 .badge.paid{ background: rgba(245,166,35,0.15); color:var(--gold); }
 
@@ -339,18 +346,6 @@ textarea{ min-height:70px; resize:vertical; }
 .phone-field input{ flex:1; }
 .field-error{ color:var(--coral); font-size:12px; margin-top:4px; }
 
-/* Video source chips (Deliverables) */
-.video-sources{ margin: 10px 0 14px; }
-.video-sources label{ font-size:11px; color:var(--chalk-faint); text-transform:uppercase; letter-spacing:0.05em; }
-.source-chips{ display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
-.source-chip{ background:var(--surface-2); border:1px solid var(--line); border-radius:20px; padding:5px 10px; font-size:12px; color:var(--chalk-dim); display:flex; align-items:center; gap:6px; }
-.source-chip button{ background:none; border:none; color:var(--chalk-faint); font-size:13px; line-height:1; }
-.source-add{ display:flex; gap:8px; }
-.source-add input{ flex:1; padding:7px 10px; background:var(--surface-2); border:1px solid var(--line); border-radius:8px; color:var(--chalk); font-size:12px; }
-.progress-card{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-lg); padding:16px 18px; margin-bottom:12px; }
-.progress-head{ display:flex; align-items:center; gap:10px; margin-bottom:4px; flex-wrap:wrap; }
-.progress-head .pname{ font-weight:700; font-size:15px; }
-.progress-head .ptourney{ font-size:12px; color:var(--chalk-faint); }
 
 @media (max-width: 900px){
   #sidebar{ position:fixed; left:-236px; z-index:80; transition:left .2s; box-shadow:var(--shadow);
@@ -402,12 +397,14 @@ textarea{ min-height:70px; resize:vertical; }
     <div class="nav-item" data-view="dashboard"><span class="ic">◆</span>Dashboard</div>
 
     <div class="nav-group-label">Sales</div>
-    <div class="nav-item" data-view="sales"><span class="ic">◆</span>Contacts</div>
+    <div class="nav-item" data-view="sales"><span class="ic">◆</span>Funnel</div>
 
     <div class="nav-group-label">Relationships</div>
     <div class="nav-item" data-view="rm"><span class="ic">◆</span>Tournaments</div>
     <div class="nav-item" data-view="clients"><span class="ic">◆</span>Clients</div>
-    <div class="nav-item" data-view="progress"><span class="ic">◆</span>Deliverables</div>
+
+    <div class="nav-group-label">Team</div>
+    <div class="nav-item" data-view="tasks"><span class="ic">◆</span>Tasks</div>
 
     <div class="nav-group-label">System</div>
     <div class="nav-item" data-view="backup"><span class="ic">◆</span>Backup</div>

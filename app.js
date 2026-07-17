@@ -41,19 +41,25 @@ if ("serviceWorker" in navigator) {
 // ---------------------------------------------------------------
 // STATE
 // ---------------------------------------------------------------
-const STAGES = ["pending", "pitched", "rejected", "enrolled"];
+const STAGES = [
+  { key: "prospects",     label: "Prospects",     action: "First Call" },
+  { key: "interest",      label: "Interest",      action: "Follow-up / Email" },
+  { key: "consideration", label: "Consideration", action: "Demo Stage" },
+  { key: "intent",        label: "Intent",        action: "Pricing Questions" },
+  { key: "evaluation",    label: "Evaluation",    action: "Negotiation" },
+  { key: "action",        label: "Action",        action: "Issue a PO / Sign on Contract" },
+  { key: "retention",     label: "Retention",     action: "Ensuring product works / Feedback" }
+];
+const STAGE_KEYS = STAGES.map(s => s.key);
+function stageLabel(key) { return STAGES.find(s => s.key === key)?.label || key; }
+// A lead is considered "won" (and gets a Clients record) once it reaches Action or Retention.
+const WON_STAGES = ["action", "retention"];
+
 const CATEGORIES = [
   { key: "parent", label: "Parents" },
   { key: "athlete", label: "Athletes" },
   { key: "academy", label: "Academies / Coaches" }
 ];
-const STEP_KEYS = [
-  { key: "inferencing", label: "Inferencing" },
-  { key: "annotation", label: "Annotation" },
-  { key: "reportGeneration", label: "Report Gen" },
-  { key: "reportSent", label: "Report Sent" }
-];
-const ANNOTATORS = ["Mourya", "Keerthi", "Benoush", "Srinivas V", "Srinivas P", "Harkhraj"];
 const VALID_ROLES = ["admin", "sales", "tournament"];
 const PLAN_DEFS = {
   demo:        { label: "Demo / Free Trial", applies: ["parent","athlete"], tier: "demo" },
@@ -162,6 +168,7 @@ let appUsers = [];
 let currentUser = null;   // { uid, name, role, username }
 let currentView = "dashboard";
 let currentSalesTab = "parent";
+let showLostLeads = false;
 let currentRmTab = "parent";
 let selectedTournamentId = null;
 
@@ -169,7 +176,7 @@ let salesLeads = [];
 let rmContacts = [];
 let tournaments = [];
 let registrations = [];
-let progressDocs = [];
+let tasks = [];
 
 let unsubs = [];
 
@@ -297,14 +304,12 @@ function applyRoleVisibility() {
   const salesNav = document.querySelector('.nav-item[data-view="sales"]');
   const rmNav = document.querySelector('.nav-item[data-view="rm"]');
   const clientsNav = document.querySelector('.nav-item[data-view="clients"]');
-  const progressNav = document.querySelector('.nav-item[data-view="progress"]');
   const backupNav = document.querySelector('.nav-item[data-view="backup"]');
   const usersNav = document.querySelector('.nav-item[data-view="users"]');
-  // Everyone can view Dashboard. Adjust nav based on role.
+  // Everyone can view Dashboard and Tasks. Adjust the rest based on role.
   if (currentUser.role === "sales") {
     rmNav.style.display = "none";
     clientsNav.style.display = "none";
-    progressNav.style.display = "none";
     backupNav.style.display = "none";
   } else if (currentUser.role === "tournament") {
     salesNav.style.display = "none";
@@ -314,17 +319,17 @@ function applyRoleVisibility() {
     salesNav.style.display = "";
     rmNav.style.display = "";
     clientsNav.style.display = "";
-    progressNav.style.display = "";
     backupNav.style.display = "";
   }
-  // Users tab: only Suresh/Sesha specifically, regardless of anyone else's admin role.
+  // Users tab: only Suresh/Sesha/Mourya specifically, regardless of anyone else's admin role.
   usersNav.style.display = isSuperAdmin() ? "" : "none";
 }
 
 function canEditSales() { return currentUser.role === "admin" || currentUser.role === "sales"; }
 function canEditRM() { return currentUser.role === "admin"; }
 function canEditPriority() { return currentUser.role === "admin" || currentUser.role === "tournament"; }
-function canEditProgress() { return currentUser.role === "admin" || currentUser.role === "tournament"; }
+function canManageTasks() { return currentUser.role === "admin"; }
+function canUpdateTask(task) { return currentUser.role === "admin" || task.assignedTo === currentUser.username; }
 
 // ---------------------------------------------------------------
 // NAVIGATION
@@ -359,22 +364,22 @@ function attachListeners() {
     tournaments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     tournaments.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
     if (!selectedTournamentId && tournaments.length) selectedTournamentId = tournaments[0].id;
-    if (currentView === "rm" || currentView === "progress") render();
+    if (currentView === "rm") render();
   }));
   unsubs.push(onSnapshot(collection(db, "registrations"), snap => {
     registrations = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (currentView === "rm" || currentView === "progress") render();
+    if (currentView === "rm") render();
   }));
-  unsubs.push(onSnapshot(collection(db, "progress"), snap => {
-    progressDocs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (currentView === "progress") render();
+  unsubs.push(onSnapshot(query(collection(db, "tasks"), orderBy("createdAt", "desc")), snap => {
+    tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (currentView === "tasks" || currentView === "dashboard") render();
   }));
-  if (isSuperAdmin()) {
-    unsubs.push(onSnapshot(collection(db, "users"), snap => {
-      appUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      if (currentView === "users") render();
-    }));
-  }
+  // Everyone can read the users list (needed to populate the Task-assignee dropdown),
+  // even though only super-admins can edit it (see the Users tab itself).
+  unsubs.push(onSnapshot(collection(db, "users"), snap => {
+    appUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (currentView === "users" || currentView === "tasks") render();
+  }));
 }
 
 // ---------------------------------------------------------------
@@ -386,7 +391,7 @@ function render() {
   if (currentView === "sales") return renderSales();
   if (currentView === "rm") return renderRM();
   if (currentView === "clients") return renderClients();
-  if (currentView === "progress") return renderProgress();
+  if (currentView === "tasks") return renderTasks();
   if (currentView === "backup") return renderBackup();
   if (currentView === "users") return renderUsers();
 }
@@ -404,10 +409,11 @@ function renderDashboard() {
   const enrolledByCat = cat => rmContacts.filter(x => x.category === cat && x.planStatus !== "exhausted").length;
 
   const totalLeads = salesLeads.length;
-  const enrolled = salesLeads.filter(l => l.stage === "enrolled").length;
-  const rejected = salesLeads.filter(l => l.stage === "rejected").length;
-  const closedOut = enrolled + rejected;
-  const successRate = closedOut > 0 ? Math.round((enrolled / closedOut) * 100) : 0;
+  const won = salesLeads.filter(l => WON_STAGES.includes(l.stage) && !l.lost).length;
+  const lost = salesLeads.filter(l => l.lost).length;
+  const closedOut = won + lost;
+  const successRate = closedOut > 0 ? Math.round((won / closedOut) * 100) : 0;
+  const activeLeads = salesLeads.filter(l => !l.lost && !WON_STAGES.includes(l.stage)).length;
 
   root.innerHTML = `
     <div class="view">
@@ -428,20 +434,20 @@ function renderDashboard() {
       <div class="panel">
         <div class="panel-title">Sales Success Rate</div>
         <div class="stat-grid" style="margin-bottom:0;">
-          <div class="stat-card good countup"><div class="stat-label">Success Rate</div><div class="stat-value">${successRate}%</div><div class="stat-sub">enrolled ÷ (enrolled + rejected)</div></div>
+          <div class="stat-card good countup"><div class="stat-label">Success Rate</div><div class="stat-value">${successRate}%</div><div class="stat-sub">won ÷ (won + lost)</div></div>
           <div class="stat-card accent countup"><div class="stat-label">Total Leads</div><div class="stat-value">${totalLeads}</div><div class="stat-sub">across all categories</div></div>
-          <div class="stat-card countup"><div class="stat-label">Pending Contact</div><div class="stat-value">${salesLeads.filter(l => l.stage === "pending").length}</div><div class="stat-sub">awaiting outreach</div></div>
-          <div class="stat-card bad countup"><div class="stat-label">Rejected</div><div class="stat-value">${rejected}</div><div class="stat-sub">did not convert</div></div>
+          <div class="stat-card countup"><div class="stat-label">Active in Funnel</div><div class="stat-value">${activeLeads}</div><div class="stat-sub">still in progress</div></div>
+          <div class="stat-card bad countup"><div class="stat-label">Lost</div><div class="stat-value">${lost}</div><div class="stat-sub">did not convert</div></div>
         </div>
       </div>
 
       <div class="chart-row">
         <div class="panel chart-box">
-          <div class="panel-title">Pipeline by Category</div>
+          <div class="panel-title">Funnel by Category</div>
           <canvas id="chart-funnel"></canvas>
         </div>
         <div class="panel chart-box">
-          <div class="panel-title">Enrolled vs Rejected</div>
+          <div class="panel-title">Won vs Lost</div>
           <canvas id="chart-outcome"></canvas>
         </div>
       </div>
@@ -453,8 +459,8 @@ function renderDashboard() {
             <div class="funnel-col">
               <div class="funnel-col-head"><span class="label">${c.label}</span></div>
               <div style="padding:14px;">
-                ${STAGES.map(s => `<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;color:var(--chalk-dim);">
-                  <span>${s.charAt(0).toUpperCase()+s.slice(1)}</span><span class="badge ${s}">${salesLeads.filter(l=>l.category===c.key && l.stage===s).length}</span>
+                ${STAGES.map(s => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;color:var(--chalk-dim);">
+                  <span>${s.label}</span><span class="badge stage-${s.key}">${salesLeads.filter(l=>l.category===c.key && l.stage===s.key && !l.lost).length}</span>
                 </div>`).join("")}
               </div>
             </div>
@@ -478,20 +484,22 @@ function renderDashboardCharts() {
   const gridColor = "rgba(255,255,255,0.06)";
   const textColor = "#A9C2AF";
 
+  const stageColors = ["#5B8CFF", "#7ED321", "#F5A623", "#A855F7", "#FF9F5B", "#3ECF8E", "#2E5B3F"];
+
   funnelChartInstance = new Chart(funnelCtx, {
     type: "bar",
     data: {
       labels: CATEGORIES.map(c => c.label),
       datasets: STAGES.map((stage, i) => ({
-        label: stage.charAt(0).toUpperCase() + stage.slice(1),
-        data: CATEGORIES.map(c => salesLeads.filter(l => l.category === c.key && l.stage === stage).length),
-        backgroundColor: ["#5B8CFF", "#7ED321", "#FF6B5E", "#3ECF8E"][i],
+        label: stage.label,
+        data: CATEGORIES.map(c => salesLeads.filter(l => l.category === c.key && l.stage === stage.key && !l.lost).length),
+        backgroundColor: stageColors[i],
         borderRadius: 4
       }))
     },
     options: {
       responsive: true,
-      plugins: { legend: { labels: { color: textColor, font: { size: 11 } } } },
+      plugins: { legend: { labels: { color: textColor, font: { size: 10 } } } },
       scales: {
         x: { stacked: true, ticks: { color: textColor }, grid: { display: false } },
         y: { stacked: true, ticks: { color: textColor, stepSize: 1 }, grid: { color: gridColor } }
@@ -499,14 +507,14 @@ function renderDashboardCharts() {
     }
   });
 
-  const enrolledCount = salesLeads.filter(l => l.stage === "enrolled").length;
-  const rejectedCount = salesLeads.filter(l => l.stage === "rejected").length;
+  const wonCount = salesLeads.filter(l => WON_STAGES.includes(l.stage) && !l.lost).length;
+  const lostCount = salesLeads.filter(l => l.lost).length;
   outcomeChartInstance = new Chart(outcomeCtx, {
     type: "doughnut",
     data: {
-      labels: ["Enrolled", "Rejected", "Still in progress"],
+      labels: ["Won", "Lost", "Still in progress"],
       datasets: [{
-        data: [enrolledCount, rejectedCount, salesLeads.length - enrolledCount - rejectedCount],
+        data: [wonCount, lostCount, salesLeads.length - wonCount - lostCount],
         backgroundColor: ["#3ECF8E", "#FF6B5E", "#2E5B3F"],
         borderWidth: 0
       }]
@@ -526,23 +534,39 @@ function renderSales() {
   root.innerHTML = `
     <div class="view">
       <div class="page-header">
-        <div><div class="page-title">Contacts</div><div class="page-desc">Track outreach through to enrollment</div></div>
+        <div><div class="page-title">Funnel</div><div class="page-desc">7-stage sales pipeline, from first contact to retention</div></div>
         ${canEditSales() ? `<button class="btn btn-primary" id="add-lead-btn">+ Add Contact</button>` : ""}
       </div>
       <div class="court-rule"></div>
       ${!canEditSales() ? `<div class="access-note">View-only access.</div>` : ""}
       <div class="tabbar">
         ${CATEGORIES.map(c => `<button class="tabbtn ${currentSalesTab===c.key?"active":""}" data-tab="${c.key}">${c.label}</button>`).join("")}
+        <button class="tabbtn ${showLostLeads?"active":""}" id="toggle-lost-btn" style="margin-left:auto; color:var(--coral);">Lost (${list.filter(l=>l.lost).length})</button>
       </div>
-      <div class="funnel-grid">
-        ${STAGES.map(stage => `
-          <div class="funnel-col" data-stage="${stage}">
+      <div class="funnel-grid" style="grid-template-columns:repeat(7,minmax(170px,1fr)); overflow-x:auto;">
+        ${showLostLeads ? `
+          <div class="funnel-col" style="grid-column:1/-1;">
+            <div class="funnel-col-head"><span class="label" style="color:var(--coral);">Lost</span><span class="count">${list.filter(l=>l.lost).length}</span></div>
+            <div class="funnel-list" style="max-height:none; flex-direction:row; flex-wrap:wrap;">
+              ${list.filter(l=>l.lost).map(l => `
+                <div class="lead-card" data-id="${l.id}" style="width:220px;">
+                  <div class="lname">${escapeHtml(l.name)}</div>
+                  <div class="lmeta">${escapeHtml(l.contact||"")}${l.assignedTo ? " · "+escapeHtml(l.assignedTo) : ""}</div>
+                </div>
+              `).join("") || `<div class="empty-state">No lost leads in this category</div>`}
+            </div>
+          </div>
+        ` : STAGES.map(stage => `
+          <div class="funnel-col" data-stage="${stage.key}">
             <div class="funnel-col-head">
-              <span class="label">${stage}</span>
-              <span class="count">${list.filter(l=>l.stage===stage).length}</span>
+              <div>
+                <span class="label">${stage.label}</span>
+                <div style="font-size:10px; color:var(--chalk-faint); margin-top:2px;">${stage.action}</div>
+              </div>
+              <span class="count">${list.filter(l=>l.stage===stage.key && !l.lost).length}</span>
             </div>
             <div class="funnel-list">
-              ${list.filter(l=>l.stage===stage).map(l => `
+              ${list.filter(l=>l.stage===stage.key && !l.lost).map(l => `
                 <div class="lead-card" data-id="${l.id}">
                   <div class="lname">${escapeHtml(l.name)}</div>
                   <div class="lmeta">${escapeHtml(l.contact||"")}${l.assignedTo ? " · "+escapeHtml(l.assignedTo) : ""}</div>
@@ -554,7 +578,8 @@ function renderSales() {
       </div>
     </div>
   `;
-  root.querySelectorAll(".tabbtn").forEach(b => b.addEventListener("click", () => { currentSalesTab = b.dataset.tab; renderSales(); }));
+  root.querySelectorAll(".tabbtn[data-tab]").forEach(b => b.addEventListener("click", () => { currentSalesTab = b.dataset.tab; renderSales(); }));
+  document.getElementById("toggle-lost-btn").addEventListener("click", () => { showLostLeads = !showLostLeads; renderSales(); });
   root.querySelectorAll(".lead-card").forEach(c => c.addEventListener("click", () => openLeadModal(c.dataset.id)));
   const addBtn = document.getElementById("add-lead-btn");
   if (addBtn) addBtn.addEventListener("click", () => openLeadModal(null));
@@ -563,22 +588,27 @@ function renderSales() {
 function openLeadModal(id) {
   const lead = id ? salesLeads.find(l => l.id === id) : null;
   const editable = canEditSales();
+  const category = lead?.category || currentSalesTab;
   showModal(`
     <h3>${lead ? "Edit Contact" : "Add Contact"}</h3>
     <div class="form-grid">
       <div class="field full"><label>Name</label><input id="m-name" value="${lead?escapeAttr(lead.name):""}" ${editable?"":"disabled"}></div>
       <div class="field"><label>Category</label>
-        <select id="m-category" ${editable?"":"disabled"}>${CATEGORIES.map(c=>`<option value="${c.key}" ${lead?.category===c.key||(!lead&&currentSalesTab===c.key)?"selected":""}>${c.label}</option>`).join("")}</select>
+        <select id="m-category" ${editable?"":"disabled"}>${CATEGORIES.map(c=>`<option value="${c.key}" ${category===c.key?"selected":""}>${c.label}</option>`).join("")}</select>
       </div>
       <div class="field"><label>Stage</label>
-        <select id="m-stage" ${editable?"":"disabled"}>${STAGES.map(s=>`<option value="${s}" ${lead?.stage===s||(!lead&&s==="pending")?"selected":""}>${s}</option>`).join("")}</select>
+        <select id="m-stage" ${editable?"":"disabled"}>${STAGES.map(s=>`<option value="${s.key}" ${lead?.stage===s.key||(!lead&&s.key==="prospects")?"selected":""}>${s.label} — ${s.action}</option>`).join("")}</select>
       </div>
       <div class="field full"><label>Phone</label>${renderPhoneFieldHTML("m-phone", lead?.contact)}</div>
       <div class="field full"><label>Email (optional)</label><input id="m-email" value="${lead?escapeAttr(lead.email||""):""}" placeholder="name@example.com" ${editable?"":"disabled"}><div class="field-error" id="m-email-err"></div></div>
+      <div class="field full"><label>Website (optional${category==="academy"?", for academies":""})</label><input id="m-website" value="${lead?escapeAttr(lead.website||""):""}" placeholder="https://example.com" ${editable?"":"disabled"}></div>
       <div class="field full"><label>Source</label><input id="m-source" value="${lead?escapeAttr(lead.source||""):""}" placeholder="Referral, inbound, cold, etc." ${editable?"":"disabled"}></div>
       <div class="field full"><label>Assigned To</label><input id="m-assigned" value="${lead?escapeAttr(lead.assignedTo||""):""}" ${editable?"":"disabled"}></div>
       <div class="field full"><label>Notes</label><textarea id="m-notes" ${editable?"":"disabled"}>${lead?escapeHtml(lead.notes||""):""}</textarea></div>
     </div>
+    ${editable ? `<label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--chalk-dim); margin-top:4px;">
+      <input type="checkbox" id="m-lost" ${lead?.lost?"checked":""}> Mark as lost (didn't convert)
+    </label>` : (lead?.lost ? `<div class="access-note" style="color:var(--coral);">This lead is marked lost.</div>` : "")}
     <div class="modal-actions">
       ${lead && editable ? `<button class="btn btn-danger" id="m-delete">Delete</button>` : ""}
       <button class="btn btn-ghost" id="m-cancel">Close</button>
@@ -598,9 +628,11 @@ function openLeadModal(id) {
         category: document.getElementById("m-category").value,
         stage: document.getElementById("m-stage").value,
         contact: phone, email,
+        website: document.getElementById("m-website").value.trim(),
         source: document.getElementById("m-source").value.trim(),
         assignedTo: document.getElementById("m-assigned").value.trim(),
         notes: document.getElementById("m-notes").value.trim(),
+        lost: document.getElementById("m-lost").checked,
         updatedAt: serverTimestamp()
       };
       try {
@@ -613,7 +645,7 @@ function openLeadModal(id) {
           const ref = await safeAdd("salesLeads", payload);
           leadId = ref.id;
         }
-        if (payload.stage === "enrolled") {
+        if (WON_STAGES.includes(payload.stage) && !payload.lost) {
           openEnrollPlanModal(leadId, payload);
         } else {
           closeModal();
@@ -822,6 +854,7 @@ function openRegisterModal() {
         <div class="field full"><label>Phone</label>${renderPhoneFieldHTML("new-c-phone", "")}</div>
         <div class="field full"><label>Email (optional)</label><input id="new-c-email" placeholder="name@example.com"><div class="field-error" id="new-c-email-err"></div></div>
         <div class="field full"><label>Role</label><input id="new-c-role" placeholder="${roleFieldPlaceholder(currentRmTab)}"></div>
+        <div class="field full"><label>Website (optional${currentRmTab==="academy"?", for academies":""})</label><input id="new-c-website" placeholder="https://example.com"></div>
         <div class="field full"><label>Plan</label>${renderPlanPickerHTML("new-c-plan-picker", currentRmTab, plansForCategory(currentRmTab)[0]?.key)}</div>
         <div class="field full"><label>Cost (optional)</label><input id="new-c-cost" placeholder="e.g. ₹2,000/month"></div>
       </div>
@@ -891,8 +924,11 @@ function openRegisterModal() {
           name: newName, category: currentRmTab,
           contact: phone, email,
           role: document.getElementById("new-c-role").value.trim(),
+          website: document.getElementById("new-c-website").value.trim(),
           plan: getSelectedPlan("new-c-plan-picker", plansForCategory(currentRmTab)[0]?.key),
           cost: document.getElementById("new-c-cost").value.trim(),
+          sourceTournamentId: selectedTournamentId,
+          sourceTournamentName: tournaments.find(t=>t.id===selectedTournamentId)?.name || "",
           createdAt: serverTimestamp()
         });
         contactId = ref.id;
@@ -922,6 +958,7 @@ function openEditContactModal(contactId) {
       <div class="field full"><label>Phone</label>${renderPhoneFieldHTML("ec-phone", contact.contact)}</div>
       <div class="field full"><label>Email (optional)</label><input id="ec-email" value="${escapeAttr(contact.email||"")}" placeholder="name@example.com"><div class="field-error" id="ec-email-err"></div></div>
       <div class="field full"><label>Role</label><input id="ec-role" value="${escapeAttr(contact.role||"")}" placeholder="${roleFieldPlaceholder(contact.category)}"></div>
+      <div class="field full"><label>Website (optional${contact.category==="academy"?", for academies":""})</label><input id="ec-website" value="${escapeAttr(contact.website||"")}" placeholder="https://example.com"></div>
       <div class="field full" id="ec-plan-field"><label>Plan</label>${renderPlanPickerHTML("ec-plan-picker", contact.category, contact.plan || plansForCategory(contact.category)[0]?.key)}</div>
       <div class="field full"><label>Cost (optional)</label><input id="ec-cost" value="${escapeAttr(contact.cost||"")}" placeholder="e.g. ₹2,000/month"></div>
     </div>
@@ -948,6 +985,7 @@ function openEditContactModal(contactId) {
       await safeUpdate("rmContacts", contactId, {
         name, category, contact: phone, email,
         role: document.getElementById("ec-role").value.trim(),
+        website: document.getElementById("ec-website").value.trim(),
         plan: getSelectedPlan("ec-plan-picker", contact.plan),
         cost: document.getElementById("ec-cost").value.trim()
       });
@@ -965,11 +1003,13 @@ function openEditContactModal(contactId) {
 let currentClientsCatFilter = "all";
 let currentClientsPlanFilter = "all";
 let currentClientsStatusFilter = "active"; // "active" | "exhausted"
+let currentClientsSourceFilter = "all"; // "all" | "tournament"
 
 function renderClients() {
   let list = rmContacts.filter(c => currentClientsStatusFilter === "exhausted" ? c.planStatus === "exhausted" : c.planStatus !== "exhausted");
   if (currentClientsCatFilter !== "all") list = list.filter(c => c.category === currentClientsCatFilter);
   if (currentClientsPlanFilter !== "all") list = list.filter(c => (c.plan || "") === currentClientsPlanFilter);
+  if (currentClientsSourceFilter === "tournament") list = list.filter(c => c.sourceTournamentId);
 
   // Which plan filter buttons to show depends on which category is selected —
   // parent/athlete and academy use entirely different plan tiers.
@@ -980,6 +1020,7 @@ function renderClients() {
   const activeOnly = c => c.planStatus !== "exhausted";
   const countFor = (cat) => rmContacts.filter(c => (cat==="all"||c.category===cat) && activeOnly(c)).length;
   const exhaustedCount = rmContacts.filter(c => c.planStatus === "exhausted").length;
+  const tournamentSourcedCount = rmContacts.filter(c => c.sourceTournamentId && activeOnly(c)).length;
 
   root.innerHTML = `
     <div class="view">
@@ -992,6 +1033,7 @@ function renderClients() {
         <div class="stat-card countup"><div class="stat-label">Parents</div><div class="stat-value">${countFor("parent")}</div></div>
         <div class="stat-card countup"><div class="stat-label">Athletes</div><div class="stat-value">${countFor("athlete")}</div></div>
         <div class="stat-card countup"><div class="stat-label">Academies</div><div class="stat-value">${countFor("academy")}</div></div>
+        <div class="stat-card accent countup"><div class="stat-label">From Tournaments</div><div class="stat-value">${tournamentSourcedCount}</div></div>
         <div class="stat-card bad countup"><div class="stat-label">Exhausted Plans</div><div class="stat-value">${exhaustedCount}</div></div>
       </div>
 
@@ -1003,6 +1045,7 @@ function renderClients() {
       <div class="tabbar">
         <button class="tabbtn ${currentClientsCatFilter==="all"?"active":""}" data-catfilter="all">All</button>
         ${CATEGORIES.map(c => `<button class="tabbtn ${currentClientsCatFilter===c.key?"active":""}" data-catfilter="${c.key}">${c.label}</button>`).join("")}
+        <button class="tabbtn ${currentClientsSourceFilter==="tournament"?"active":""}" id="toggle-tournament-source" style="margin-left:auto;">From tournaments only</button>
       </div>
       <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
         <button class="btn btn-sm ${currentClientsPlanFilter==="all"?"btn-primary":"btn-ghost"}" data-planfilter="all">All plans</button>
@@ -1016,7 +1059,9 @@ function renderClients() {
             <span class="rmeta">${CATEGORIES.find(x=>x.key===c.category)?.label || c.category}</span>
             <span class="rmeta">${escapeHtml(c.contact||"")}</span>
             ${c.role ? `<span class="rmeta">${escapeHtml(c.role)}</span>` : ""}
+            ${c.website ? `<a href="${escapeAttr(c.website)}" target="_blank" rel="noopener" class="rmeta" style="color:var(--blue);">${escapeHtml(c.website.replace(/^https?:\/\//,''))}</a>` : ""}
             ${c.cost ? `<span class="rmeta">${escapeHtml(c.cost)}</span>` : ""}
+            ${c.sourceTournamentName ? `<span class="badge tier-mid" title="Acquired via this tournament">🏆 ${escapeHtml(c.sourceTournamentName)}</span>` : ""}
             <span class="badge ${planTierClass(c.plan)}">${planLabel(c.plan)}</span>
             ${canEditRM() ? `<button class="btn btn-ghost btn-sm" data-contact="${c.id}" data-action="edit-client">Edit</button>` : ""}
             ${canEditRM() ? (currentClientsStatusFilter === "active"
@@ -1032,6 +1077,7 @@ function renderClients() {
   root.querySelectorAll("[data-statusfilter]").forEach(b => b.addEventListener("click", () => { currentClientsStatusFilter = b.dataset.statusfilter; renderClients(); }));
   root.querySelectorAll("[data-catfilter]").forEach(b => b.addEventListener("click", () => { currentClientsCatFilter = b.dataset.catfilter; currentClientsPlanFilter = "all"; renderClients(); }));
   root.querySelectorAll("[data-planfilter]").forEach(b => b.addEventListener("click", () => { currentClientsPlanFilter = b.dataset.planfilter; renderClients(); }));
+  document.getElementById("toggle-tournament-source").addEventListener("click", () => { currentClientsSourceFilter = currentClientsSourceFilter === "tournament" ? "all" : "tournament"; renderClients(); });
   root.querySelectorAll("[data-action='edit-client']").forEach(b => b.addEventListener("click", () => openEditContactModal(b.dataset.contact)));
   root.querySelectorAll("[data-action='mark-exhausted']").forEach(b => b.addEventListener("click", async () => {
     try { await safeUpdate("rmContacts", b.dataset.contact, { planStatus: "exhausted" }); } catch (err) {}
@@ -1048,122 +1094,101 @@ function renderClients() {
 }
 
 // ---------------------------------------------------------------
-// VIDEO PIPELINE PROGRESS TRACKER (enrolled athletes, per tournament)
+// TASKS — list tasks and assign them to a team member. Everyone can
+// see the board; only admins create/delete/reassign; the assignee
+// (or an admin) can move a task's status.
 // ---------------------------------------------------------------
-function renderProgress() {
-  // Broadened to every registered category (not just athletes) — any
-  // registrant's video pipeline can be tracked here. Priority-flagged
-  // registrants (starred in Tournaments) are pulled to the top and marked.
-  const allRegs = registrations
-    .map(r => ({ ...r, contact: rmContacts.find(c => c.id === r.contactId), tourney: tournaments.find(t => t.id === r.tournamentId) }))
-    .filter(r => r.contact && r.tourney)
-    .sort((a, b) => (b.priority ? 1 : 0) - (a.priority ? 1 : 0));
+const TASK_STATUSES = [
+  { key: "todo", label: "To Do" },
+  { key: "in-progress", label: "In Progress" },
+  { key: "done", label: "Done" }
+];
+
+function renderTasks() {
+  const byStatus = key => tasks.filter(t => t.status === key);
 
   root.innerHTML = `
     <div class="view">
       <div class="page-header">
-        <div><div class="page-title">Deliverables</div><div class="page-desc">Inferencing → Annotation → Report Generation → Report Sent</div></div>
+        <div><div class="page-title">Tasks</div><div class="page-desc">Assign work to the team and track progress</div></div>
+        ${canManageTasks() ? `<button class="btn btn-primary" id="add-task-btn">+ New Task</button>` : ""}
       </div>
       <div class="court-rule"></div>
-      ${!canEditProgress() ? `<div class="access-note">View-only access.</div>` : ""}
-      ${allRegs.map(r => {
-        const p = progressDocs.find(p => p.contactId === r.contactId && p.tournamentId === r.tournamentId) || {};
-        const sources = p.videoSources || [];
-        return `
-        <div class="progress-card" data-contact="${r.contactId}" data-tourney="${r.tournamentId}">
-          <div class="progress-head">
-            <span class="pname">${escapeHtml(r.contact.name)}</span>
-            <span class="ptourney">${escapeHtml(r.tourney.name)}</span>
-            <span class="badge tier-mid">${CATEGORIES.find(c=>c.key===r.category)?.label || r.category}</span>
-            ${r.priority ? `<span class="badge tier-high">★ Priority</span>` : ""}
-          </div>
-          <div class="video-sources">
-            <label>Video Sources</label>
-            <div class="source-chips">
-              ${sources.map(s => `<span class="source-chip">${escapeHtml(s)}${canEditProgress()?`<button data-remove-source="${escapeAttr(s)}">×</button>`:""}</span>`).join("") || `<span style="font-size:12px; color:var(--chalk-faint);">None added yet</span>`}
+      <div class="funnel-grid" style="grid-template-columns:repeat(3,1fr);">
+        ${TASK_STATUSES.map(st => `
+          <div class="funnel-col">
+            <div class="funnel-col-head"><span class="label">${st.label}</span><span class="count">${byStatus(st.key).length}</span></div>
+            <div class="funnel-list" style="max-height:560px;">
+              ${byStatus(st.key).map(t => `
+                <div class="lead-card" data-id="${t.id}">
+                  <div class="lname">${escapeHtml(t.title)}</div>
+                  <div class="lmeta">${t.assignedTo ? "Assigned to " + escapeHtml(t.assignedTo) : "Unassigned"}</div>
+                </div>
+              `).join("") || `<div class="empty-state">Nothing here</div>`}
             </div>
-            ${canEditProgress() ? `
-              <div class="source-add">
-                <input type="text" class="source-input" placeholder="e.g. mour_vs_aj_set1_far.mp4">
-                <button class="btn btn-ghost btn-sm add-source-btn">+ Add</button>
-              </div>
-            ` : ""}
           </div>
-          <div class="steps">
-            ${STEP_KEYS.map(s => `
-              <div class="step-unit">
-                <span class="status-dot ${p[s.key]?"done":""}" data-step="${s.key}" title="Click to toggle"></span>
-                <span class="step-label">${s.label}</span>
-                ${s.key === "annotation" ? `
-                  <select class="annotator-select" data-annotator-for="annotation" ${canEditProgress()?"":"disabled"}>
-                    <option value="">Unassigned</option>
-                    ${ANNOTATORS.map(a => `<option value="${a}" ${p.annotator===a?"selected":""}>${a}</option>`).join("")}
-                  </select>
-                ` : ""}
-              </div>
-            `).join("")}
-          </div>
-        </div>`;
-      }).join("") || `<div class="empty-state">No one registered for tournaments yet</div>`}
+        `).join("")}
+      </div>
     </div>
   `;
+  document.getElementById("add-task-btn")?.addEventListener("click", () => openTaskModal(null));
+  root.querySelectorAll(".lead-card").forEach(c => c.addEventListener("click", () => openTaskModal(c.dataset.id)));
+}
 
-  async function upsertProgress(contactId, tournamentId, fields) {
-    let existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
-    if (existing) {
-      await safeUpdate("progress", existing.id, { ...fields, updatedAt: serverTimestamp() });
-    } else {
-      await safeAdd("progress", { contactId, tournamentId, ...fields, updatedAt: serverTimestamp() });
-    }
+function openTaskModal(id) {
+  const task = id ? tasks.find(t => t.id === id) : null;
+  const canManage = canManageTasks();
+  const canUpdate = task ? canUpdateTask(task) : canManage;
+  const assigneeOptions = appUsers.map(u => u.username).filter(Boolean);
+  showModal(`
+    <h3>${task ? "Edit Task" : "New Task"}</h3>
+    <div class="form-grid">
+      <div class="field full"><label>Title</label><input id="t-title" value="${task?escapeAttr(task.title):""}" ${canManage?"":"disabled"}></div>
+      <div class="field full"><label>Notes (optional)</label><textarea id="t-notes" ${canManage?"":"disabled"}>${task?escapeHtml(task.notes||""):""}</textarea></div>
+      <div class="field"><label>Assign to</label>
+        <select id="t-assignee" ${canManage?"":"disabled"}>
+          <option value="">Unassigned</option>
+          ${assigneeOptions.map(u => `<option value="${u}" ${task?.assignedTo===u?"selected":""}>${u}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field"><label>Status</label>
+        <select id="t-status" ${canUpdate?"":"disabled"}>
+          ${TASK_STATUSES.map(s => `<option value="${s.key}" ${(task?.status||"todo")===s.key?"selected":""}>${s.label}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      ${task && canManage ? `<button class="btn btn-danger" id="m-delete">Delete</button>` : ""}
+      <button class="btn btn-ghost" id="m-cancel">Close</button>
+      ${canManage || canUpdate ? `<button class="btn btn-primary" id="m-save">Save</button>` : ""}
+    </div>
+  `);
+  document.getElementById("m-cancel").addEventListener("click", closeModal);
+  if (task && canManage) {
+    document.getElementById("m-delete").addEventListener("click", async () => {
+      if (confirm("Delete this task?")) { try { await safeDelete("tasks", task.id); closeModal(); } catch (err) {} }
+    });
   }
-
-  if (canEditProgress()) {
-    root.querySelectorAll(".status-dot").forEach(dot => {
-      dot.addEventListener("click", async () => {
-        try {
-          const rowEl = dot.closest(".progress-card");
-          const contactId = rowEl.dataset.contact, tournamentId = rowEl.dataset.tourney;
-          const stepKey = dot.dataset.step;
-          const existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
-          const newVal = !(existing && existing[stepKey]);
-          await upsertProgress(contactId, tournamentId, { [stepKey]: newVal });
-        } catch (err) { /* toasted already */ }
-      });
-    });
-    root.querySelectorAll(".annotator-select").forEach(sel => {
-      sel.addEventListener("change", async () => {
-        try {
-          const rowEl = sel.closest(".progress-card");
-          await upsertProgress(rowEl.dataset.contact, rowEl.dataset.tourney, { annotator: sel.value });
-        } catch (err) { /* toasted already */ }
-      });
-    });
-    root.querySelectorAll(".add-source-btn").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const card = btn.closest(".progress-card");
-        const input = card.querySelector(".source-input");
-        const val = input.value.trim();
-        if (!val) return;
-        try {
-          const contactId = card.dataset.contact, tournamentId = card.dataset.tourney;
-          const existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
-          if (existing) {
-            await safeUpdate("progress", existing.id, { videoSources: arrayUnion(val), updatedAt: serverTimestamp() });
-          } else {
-            await safeAdd("progress", { contactId, tournamentId, videoSources: [val], updatedAt: serverTimestamp() });
-          }
-        } catch (err) { /* toasted already */ }
-      });
-    });
-    root.querySelectorAll("[data-remove-source]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const card = btn.closest(".progress-card");
-        try {
-          const contactId = card.dataset.contact, tournamentId = card.dataset.tourney;
-          const existing = progressDocs.find(p => p.contactId === contactId && p.tournamentId === tournamentId);
-          if (existing) await safeUpdate("progress", existing.id, { videoSources: arrayRemove(btn.dataset.removeSource), updatedAt: serverTimestamp() });
-        } catch (err) { /* toasted already */ }
-      });
+  if (canManage || canUpdate) {
+    document.getElementById("m-save").addEventListener("click", async () => {
+      try {
+        if (canManage) {
+          const title = document.getElementById("t-title").value.trim();
+          if (!title) { alert("Title is required."); return; }
+          const payload = {
+            title,
+            notes: document.getElementById("t-notes").value.trim(),
+            assignedTo: document.getElementById("t-assignee").value,
+            status: document.getElementById("t-status").value
+          };
+          if (task) await safeUpdate("tasks", task.id, payload);
+          else await safeAdd("tasks", { ...payload, createdAt: serverTimestamp() });
+        } else {
+          // Non-admin assignee can only move their own task's status.
+          await safeUpdate("tasks", task.id, { status: document.getElementById("t-status").value });
+        }
+        closeModal();
+      } catch (err) { /* toasted already */ }
     });
   }
 }
@@ -1178,7 +1203,7 @@ function renderBackup() {
       <div class="court-rule"></div>
       <div class="panel">
         <div class="panel-title">Export</div>
-        <p style="color:var(--chalk-dim); font-size:13px; margin-bottom:14px;">Downloads sales leads, relationship contacts, tournaments, registrations, and deliverables progress in one file. Do this at month-end and store it somewhere safe.</p>
+        <p style="color:var(--chalk-dim); font-size:13px; margin-bottom:14px;">Downloads sales leads, relationship contacts, tournaments, registrations, and tasks in one file. Do this at month-end and store it somewhere safe.</p>
         <button class="btn btn-primary" id="export-btn">Download Backup (.json)</button>
       </div>
       <div class="panel">
@@ -1192,7 +1217,7 @@ function renderBackup() {
         <div class="panel-title" style="color: var(--coral);">Danger Zone — Erase Test Data</div>
         <p style="color:var(--chalk-dim); font-size:13px; margin-bottom:14px;">
           For individual test records: go to Contacts or Clients and use each row's own <b>Delete</b> button.<br><br>
-          To wipe <b>everything</b> at once (all sales contacts, clients, tournaments, registrations, and deliverables — a full reset), type <b>DELETE</b> below. This cannot be undone, and there's no way to recover it afterward except restoring an earlier backup file.
+          To wipe <b>everything</b> at once (all sales contacts, clients, tournaments, registrations, and tasks — a full reset), type <b>DELETE</b> below. This cannot be undone, and there's no way to recover it afterward except restoring an earlier backup file.
         </p>
         <div class="form-grid" style="margin-bottom:12px;">
           <input type="text" id="wipe-confirm-input" class="full" placeholder="Type DELETE to enable" style="grid-column:1/-1; padding:10px 12px; background:var(--surface-2); border:1px solid var(--line); border-radius:8px; color:var(--chalk);">
@@ -1203,7 +1228,7 @@ function renderBackup() {
     </div>
   `;
   document.getElementById("export-btn").addEventListener("click", () => {
-    const data = { exportedAt: new Date().toISOString(), salesLeads, rmContacts, tournaments, registrations, progress: progressDocs };
+    const data = { exportedAt: new Date().toISOString(), salesLeads, rmContacts, tournaments, registrations, tasks };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1226,7 +1251,7 @@ function renderBackup() {
       status.textContent = "Restoring…";
       const collectionsMap = {
         salesLeads: data.salesLeads, rmContacts: data.rmContacts, tournaments: data.tournaments,
-        registrations: data.registrations, progress: data.progress
+        registrations: data.registrations, tasks: data.tasks
       };
       let count = 0;
       for (const [colName, records] of Object.entries(collectionsMap)) {
@@ -1248,12 +1273,12 @@ function renderBackup() {
     document.getElementById("wipe-all-btn").disabled = e.target.value.trim() !== "DELETE";
   });
   document.getElementById("wipe-all-btn").addEventListener("click", async () => {
-    if (!confirm("This will permanently delete every sales contact, client, tournament, registration, and deliverable record. Are you absolutely sure?")) return;
+    if (!confirm("This will permanently delete every sales contact, client, tournament, registration, and task. Are you absolutely sure?")) return;
     const status = document.getElementById("wipe-status");
     status.textContent = "Erasing…";
     try {
       let count = 0;
-      for (const [colName, list] of Object.entries({ salesLeads, rmContacts, tournaments, registrations, progress: progressDocs })) {
+      for (const [colName, list] of Object.entries({ salesLeads, rmContacts, tournaments, registrations, tasks })) {
         for (const rec of list) { await safeDelete(colName, rec.id); count++; }
       }
       status.textContent = `Done — erased ${count} records.`;
@@ -1261,6 +1286,7 @@ function renderBackup() {
       status.textContent = "Something went wrong partway through — check the toast messages above.";
     }
   });
+}
 }
 
 // ---------------------------------------------------------------
@@ -1279,7 +1305,7 @@ function renderUsers() {
         <button class="btn btn-primary" id="add-user-btn">+ Add User</button>
       </div>
       <div class="court-rule"></div>
-      <div class="access-note">Roles: <b>admin</b> (full access) · <b>sales</b> (Contacts only) · <b>tournament</b> (Relationships, priority, Deliverables) · <b>disabled</b> (blocks sign-in). This panel is only visible to Suresh and Sesha.</div>
+      <div class="access-note">Roles: <b>admin</b> (full access) · <b>sales</b> (Funnel only) · <b>tournament</b> (Relationships, priority) · <b>disabled</b> (blocks sign-in). This panel is only visible to Suresh, Sesha, and Mourya.</div>
       <div class="rm-list">
         ${appUsers.map(u => `
           <div class="rm-row">
