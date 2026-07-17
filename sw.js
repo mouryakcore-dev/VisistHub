@@ -1,6 +1,6 @@
-// Bump this version string EVERY time app.html, app.js, or this file changes,
-// so phones/browsers pick up the new version instead of serving a stale cache.
-const CACHE_VERSION = "visist-crm-v4";
+// Bump this version string EVERY time app.html, app.js, or this file changes.
+// It's used to name the cache bucket so old buckets get cleaned up on activate.
+const CACHE_VERSION = "visist-crm-v5";
 const CORE_ASSETS = [
   "./app.html",
   "./app.js",
@@ -24,12 +24,23 @@ self.addEventListener("activate", event => {
   );
 });
 
+// NETWORK-FIRST for the app shell: always try to fetch the latest version
+// first. Only fall back to the cached copy if the network request fails
+// (i.e. genuinely offline). This means updates show up automatically on the
+// next load -- no manual "clear site data" needed, even for an already-
+// installed app, since the service worker checks the network every time
+// instead of trusting whatever it cached previously.
 self.addEventListener("fetch", event => {
-  // Network-first for Firebase/Firestore calls, cache-first for app shell.
   if (event.request.url.includes("firestore") || event.request.url.includes("googleapis")) {
-    return; // let these pass straight through to the network
+    return; // let Firebase/Firestore calls pass straight through
   }
   event.respondWith(
-    caches.match(event.request).then(cached => cached || fetch(event.request))
+    fetch(event.request)
+      .then(response => {
+        const copy = response.clone();
+        caches.open(CACHE_VERSION).then(cache => cache.put(event.request, copy));
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
