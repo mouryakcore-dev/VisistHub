@@ -529,6 +529,9 @@ function renderDashboardCharts() {
 // ---------------------------------------------------------------
 // SALES PIPELINE
 // ---------------------------------------------------------------
+let salesViewMode = "board"; // "board" | "list"
+let salesListSearch = "";
+
 function renderSales() {
   const list = salesLeads.filter(l => l.category === currentSalesTab);
   root.innerHTML = `
@@ -540,9 +543,47 @@ function renderSales() {
       <div class="court-rule"></div>
       ${!canEditSales() ? `<div class="access-note">View-only access.</div>` : ""}
       <div class="tabbar">
-        ${CATEGORIES.map(c => `<button class="tabbtn ${currentSalesTab===c.key?"active":""}" data-tab="${c.key}">${c.label}</button>`).join("")}
-        <button class="tabbtn ${showLostLeads?"active":""}" id="toggle-lost-btn" style="margin-left:auto; color:var(--coral);">Lost (${list.filter(l=>l.lost).length})</button>
+        ${CATEGORIES.map(c => `<button class="tabbtn ${currentSalesTab===c.key?"active":""}" data-tab="${c.key}">${c.label} (${salesLeads.filter(l=>l.category===c.key).length})</button>`).join("")}
+        <div class="mode-toggle" style="max-width:180px; margin-left:auto;">
+          <button type="button" class="${salesViewMode==="board"?"active":""}" data-viewmode="board">Board</button>
+          <button type="button" class="${salesViewMode==="list"?"active":""}" data-viewmode="list">List</button>
+        </div>
+        <button class="tabbtn ${showLostLeads?"active":""}" id="toggle-lost-btn" style="color:var(--coral);">Lost (${list.filter(l=>l.lost).length})</button>
       </div>
+
+      ${salesViewMode === "list" ? `
+        <div class="field" style="max-width:320px; margin-bottom:14px;">
+          <input type="text" id="sales-list-search" placeholder="Search name, phone, email, website, notes…" value="${escapeAttr(salesListSearch)}">
+        </div>
+        <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead>
+            <tr style="text-align:left; color:var(--chalk-faint); font-size:11px; text-transform:uppercase; border-bottom:1px solid var(--line);">
+              <th style="padding:8px;">Name</th><th style="padding:8px;">Stage</th><th style="padding:8px;">Phone</th>
+              <th style="padding:8px;">Email</th><th style="padding:8px;">Website</th><th style="padding:8px;">Assigned</th><th style="padding:8px;">Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(() => {
+              const term = salesListSearch.trim().toLowerCase();
+              const filtered = list.filter(l => !l.lost && (!term ||
+                [l.name,l.contact,l.email,l.website,l.notes].some(v => (v||"").toLowerCase().includes(term))));
+              return filtered.map(l => `
+                <tr class="list-row" data-id="${l.id}" style="border-bottom:1px solid var(--line); cursor:pointer;">
+                  <td style="padding:8px; font-weight:600;">${escapeHtml(l.name)}</td>
+                  <td style="padding:8px;"><span class="badge stage-${l.stage}">${stageLabel(l.stage)}</span></td>
+                  <td style="padding:8px; color:var(--chalk-dim);">${escapeHtml(l.contact||"—")}</td>
+                  <td style="padding:8px; color:var(--chalk-dim);">${escapeHtml(l.email||"—")}</td>
+                  <td style="padding:8px; color:var(--chalk-dim);">${l.website ? `<a href="${escapeAttr(l.website)}" target="_blank" rel="noopener" style="color:var(--blue);">${escapeHtml(l.website.replace(/^https?:\/\//,''))}</a>` : "—"}</td>
+                  <td style="padding:8px; color:var(--chalk-dim);">${escapeHtml(l.assignedTo||"—")}</td>
+                  <td style="padding:8px; color:var(--chalk-faint); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(l.notes||"")}</td>
+                </tr>
+              `).join("") || `<tr><td colspan="7" style="padding:20px; text-align:center; color:var(--chalk-faint);">No contacts match</td></tr>`;
+            })()}
+          </tbody>
+        </table>
+        </div>
+      ` : `
       <div class="funnel-grid" style="grid-template-columns:repeat(7,minmax(170px,1fr)); overflow-x:auto;">
         ${showLostLeads ? `
           <div class="funnel-col" style="grid-column:1/-1;">
@@ -576,11 +617,14 @@ function renderSales() {
           </div>
         `).join("")}
       </div>
+      `}
     </div>
   `;
   root.querySelectorAll(".tabbtn[data-tab]").forEach(b => b.addEventListener("click", () => { currentSalesTab = b.dataset.tab; renderSales(); }));
+  root.querySelectorAll("[data-viewmode]").forEach(b => b.addEventListener("click", () => { salesViewMode = b.dataset.viewmode; renderSales(); }));
   document.getElementById("toggle-lost-btn").addEventListener("click", () => { showLostLeads = !showLostLeads; renderSales(); });
-  root.querySelectorAll(".lead-card").forEach(c => c.addEventListener("click", () => openLeadModal(c.dataset.id)));
+  document.getElementById("sales-list-search")?.addEventListener("input", (e) => { salesListSearch = e.target.value; renderSales(); document.getElementById("sales-list-search").focus(); document.getElementById("sales-list-search").selectionStart = document.getElementById("sales-list-search").selectionEnd = salesListSearch.length; });
+  root.querySelectorAll(".lead-card, .list-row").forEach(c => c.addEventListener("click", () => openLeadModal(c.dataset.id)));
   const addBtn = document.getElementById("add-lead-btn");
   if (addBtn) addBtn.addEventListener("click", () => openLeadModal(null));
 }
