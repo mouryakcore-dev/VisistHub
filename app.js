@@ -1287,7 +1287,6 @@ function renderBackup() {
     }
   });
 }
-}
 
 // ---------------------------------------------------------------
 // USERS (admin only) — add people and change roles without touching
